@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: jobs-api
+  namespace: services
+  labels:
+    app: jobs-api
+spec:
+  type: ClusterIP
+  selector:
+    app: jobs-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP

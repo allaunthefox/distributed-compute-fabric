@@ -1,0 +1,437 @@
+# Ray Cluster Configuration for GGUF + VCN-LUPINE Deployment
+# Version: 1.0.0
+# Date: 2026-06-01
+# Author: Mistral Vibe
+
+# =============================================================================
+# RAY CLUSTER - GGUF Inference with VCN-LUPINE
+# =============================================================================
+#
+# Architecture:
+# - Head node: cupfox (control plane)
+# - GPU Workers: qfox-1 (CUDA + VCN-LUPINE)
+# - ARM64 Workers: neon-64gb (CPU)
+# - VAAPI Workers: steamdeck (VAAPI + VCN-LUPINE)
+#
+# All nodes connected via Tailscale mesh (100.x.x.x)
+# VCN-LUPINE enabled via LD_PRELOAD on all workers
+#
+# =============================================================================
+
+apiVersion: ray.io/v1alpha1
+kind: RayCluster
+metadata:
+  name: vcn-ray-cluster
+  namespace: services
+  labels:
+    app: ray
+    component: vcn-gpu-inference
+    version: "1.0.0"
+
+spec:
+  # =========================================================================
+  # HEAD NODE CONFIGURATION
+  # =========================================================================
+  # FIX: Moved from qfox-1 to cupfox to avoid single point of failure
+  # The head node manages the Ray cluster but doesn't run workers
+  headGroupSpec:
+    serviceType: ClusterIP
+    rayStartParams:
+      dashboard-host: "0.0.0.0"
+      dashboard-port: "8265"
+      # SECURITY: Enable dashboard authentication
+      dashboard-user: "admin"
+      dashboard-password: "${RAY_DASHBOARD_PASSWORD}"
+      # Enable metrics for Prometheus
+      metrics-export-port: "8080"
+      # Object store memory allocation
+      object-store-memory: "1000000000"  # 1GB
+      # Enable Ray Client Server
+      enable-client-access: "true"
+    template:
+      metadata:
+        labels:
+          ray.io/ray-node-type: head
+          app: ray
+          component: head
+        annotations:
+          # Tailscale annotation for mesh networking
+          tailscale.com/host: "cupfox"
+      spec:
+        # Pinned to cupfox (control plane node)
+        nodeSelector:
+          kubernetes.io/hostname: cupfox
+        # Avoid scheduling on nodes with taints
+        tolerations:
+        - key: "node-role.kubernetes.io/control-plane"
+          operator: "Exists"
+          effect: "NoSchedule"
+        - key: "node-role.kubernetes.io/master"
+          operator: "Exists"
+          effect: "NoSchedule"
+        # Resource requests/limits
+        containers:
+        - name: ray-head
+          image: rayproject/ray:2.9.0-py313-gpu
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c"]
+          args:
+          - "ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 "
+            "--dashboard-user=admin --dashboard-password=$(RAY_DASHBOARD_PASSWORD) "
+            "--metrics-export-port=8080 --object-store-memory=1000000000 "
+            "--enable-client-access --disable-usage-stats"
+          env:
+          # VCN-LUPINE: Load shim via LD_PRELOAD
+          - name: LD_PRELOAD
+            value: "/usr/local/lib/vcn-lupine.so"
+          # Ray dashboard password (from Kubernetes secret)
+          - name: RAY_DASHBOARD_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: ray-dashboard-secret
+                key: password
+          # Ray configuration
+          - name: RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE
+            value: "true"
+          - name: RAY_memory_monitor_refresh_ms
+            value: "1000"
+          # Node identifier
+          - name: RAY_node_name
+            value: "cupfox-ray-head"
+          ports:
+          - containerPort: 6379
+            name: ray-head
+            protocol: TCP
+          - containerPort: 8265
+            name: dashboard
+            protocol: TCP
+          - containerPort: 8080
+            name: metrics
+            protocol: TCP
+          - containerPort: 10001
+            name: client-server
+            protocol: TCP
+          resources:
+            limits:
+              memory: "4Gi"
+              cpu: "2"
+            requests:
+              memory: "2Gi"
+              cpu: "1"
+          volumeMounts:
+          # VCN-LUPINE shim
+          - name: vcn-shim
+            mountPath: /usr/local/lib/vcn-lupine.so
+            subPath: vcn-lupine.so
+          # Shared memory for Ray
+          - name: shm
+            mountPath: /dev/shm
+          # Ray logs
+          - name: ray-logs
+            mountPath: /tmp/ray
+        volumes:
+        - name: vcn-shim
+          hostPath:
+            path: /usr/local/lib/vcn-lupine.so
+            type: File
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "4Gi"
+        - name: ray-logs
+          emptyDir: {}
+
+  # =========================================================================
+  # WORKER GROUP SPECIFICATIONS
+  # =========================================================================
+  # Three worker groups: GPU (qfox-1), ARM64 (neon-64gb), VAAPI (steamdeck)
+  #
+  # FIX: Distributed across nodes (previously all on qfox-1)
+  # FIX: minReplicas=1 (previously 0, causing workers to not start automatically)
+  #
+  workerGroupSpecs:
+    # -------------------------------------------------------------------------
+    # GPU WORKERS (qfox-1) - CUDA + VCN-LUPINE
+    # -------------------------------------------------------------------------
+    # Hosts: Qwopus3.5-9B (7GB VRAM) + DeepSeek-Coder (8GB VRAM)
+    # Total: 15GB/16GB GPU utilization
+    - groupName: gpu-workers
+      rayStartParams: {}
+      minReplicas: 1  # FIX: Always have at least 1 GPU worker
+      maxReplicas: 2  # Can scale up to 2 if needed
+      replicas: 1
+      template:
+        metadata:
+          labels:
+            ray.io/ray-node-type: worker
+            app: ray
+            component: gpu-worker
+            gpu_type: CUDA
+            vcn_enabled: "true"
+          annotations:
+            tailscale.com/host: "qfox-1"
+        spec:
+          nodeSelector:
+            kubernetes.io/hostname: qfox-1
+          tolerations:
+          - key: "nvidia.com/gpu"
+            operator: "Exists"
+            effect: "NoSchedule"
+          containers:
+          - name: ray-worker
+            image: rayproject/ray:2.9.0-py313-gpu
+            imagePullPolicy: Always
+            env:
+            # VCN-LUPINE: Critical for hardware acceleration
+            - name: LD_PRELOAD
+              value: "/usr/local/lib/vcn-lupine.so"
+            # Node identifier
+            - name: RAY_node_name
+              value: "qfox-1-gpu-worker"
+            # GPU configuration
+            - name: RAY_GPUemory
+              value: "16"
+            resources:
+              limits:
+                nvidia.com/gpu: 1
+                memory: "24Gi"
+                cpu: "8"
+              requests:
+                nvidia.com/gpu: 1
+                memory: "24Gi"
+                cpu: "4"
+            volumeMounts:
+            # VCN-LUPINE shim
+            - name: vcn-shim
+              mountPath: /usr/local/lib/vcn-lupine.so
+              subPath: vcn-lupine.so
+            # NVIDIA GPU device
+            - name: nvidia-dri
+              mountPath: /dev/dri
+            # NVIDIA driver
+            - name: nvidia-driver
+              mountPath: /usr/lib/x86_64-linux-gnu/libnvidia-ml.so
+              subPath: libnvidia-ml.so
+            # CUDA libraries
+            - name: nvidia-cuda
+              mountPath: /usr/local/cuda
+            # Shared memory
+            - name: shm
+              mountPath: /dev/shm
+            # Model cache
+            - name: model-cache
+              mountPath: /tmp/gguf-models
+            # Ray logs
+            - name: ray-logs
+              mountPath: /tmp/ray
+            # Garage S3 models (optional: mount if Garage is on same node)
+            - name: garage-models
+              mountPath: /mnt/models
+          volumes:
+          - name: vcn-shim
+            hostPath:
+              path: /usr/local/lib/vcn-lupine.so
+              type: File
+          - name: nvidia-dri
+            hostPath:
+              path: /dev/dri
+          - name: nvidia-driver
+            hostPath:
+              path: /usr/lib/x86_64-linux-gnu
+          - name: nvidia-cuda
+            hostPath:
+              path: /usr/local/cuda
+          - name: shm
+            emptyDir:
+              medium: Memory
+              sizeLimit: "8Gi"
+          - name: model-cache
+            emptyDir:
+              sizeLimit: "20Gi"
+          - name: ray-logs
+            emptyDir: {}
+          - name: garage-models
+            hostPath:
+              path: /path/to/garage/models
+              type: DirectoryOrCreate
+
+    # -------------------------------------------------------------------------
+    # ARM64 WORKERS (neon-64gb) - CPU only
+    # -------------------------------------------------------------------------
+    # Hosts: Gemma-4-E4B (CPU-only)
+    # Total: 10GB/56GB RAM utilization
+    - groupName: arm64-workers
+      rayStartParams: {}
+      minReplicas: 1  # FIX: Always have at least 1 ARM64 worker
+      maxReplicas: 3  # Can scale up to 3 for parallel CPU inference
+      replicas: 1
+      template:
+        metadata:
+          labels:
+            ray.io/ray-node-type: worker
+            app: ray
+            component: arm64-worker
+            gpu_type: CPU
+          annotations:
+            tailscale.com/host: "neon-64gb"
+        spec:
+          nodeSelector:
+            kubernetes.io/hostname: neon-64gb
+          containers:
+          - name: ray-worker
+            # Use local ARM64 Ray image
+            image: localhost/rayproject/ray:arm64-aarch64
+            imagePullPolicy: Always
+            env:
+            # VCN-LUPINE: Optional for CPU (can still use for encoding)
+            - name: LD_PRELOAD
+              value: "/usr/local/lib/vcn-lupine.so"
+            # Node identifier
+            - name: RAY_node_name
+              value: "neon-64gb-arm64-worker"
+            # CPU-specific optimizations
+            - name: RAY_num_cpus
+              value: "16"
+            - name: OMP_NUM_THREADS
+              value: "16"
+            resources:
+              limits:
+                memory: "56Gi"
+                cpu: "16"
+              requests:
+                memory: "40Gi"
+                cpu: "12"
+            volumeMounts:
+            # VCN-LUPINE shim
+            - name: vcn-shim
+              mountPath: /usr/local/lib/vcn-lupine.so
+              subPath: vcn-lupine.so
+            # Model cache
+            - name: model-cache
+              mountPath: /tmp/gguf-models
+            # Ray logs
+            - name: ray-logs
+              mountPath: /tmp/ray
+          volumes:
+          - name: vcn-shim
+            hostPath:
+              path: /usr/local/lib/vcn-lupine.so
+              type: File
+          - name: model-cache
+            emptyDir:
+              sizeLimit: "20Gi"
+          - name: ray-logs
+            emptyDir: {}
+
+    # -------------------------------------------------------------------------
+    # VAAPI WORKERS (steamdeck) - VAAPI + VCN-LUPINE
+    # -------------------------------------------------------------------------
+    # Hosts: Llava-1.5-7B (vision model)
+    # Total: 8GB/16GB GPU utilization
+    - groupName: vaapi-workers
+      rayStartParams: {}
+      minReplicas: 1  # FIX: Always have at least 1 VAAPI worker
+      maxReplicas: 1  # Single VAAPI node
+      replicas: 1
+      template:
+        metadata:
+          labels:
+            ray.io/ray-node-type: worker
+            app: ray
+            component: vaapi-worker
+            gpu_type: VAAPI
+            vcn_enabled: "true"
+          annotations:
+            tailscale.com/host: "steamdeck"
+        spec:
+          nodeSelector:
+            kubernetes.io/hostname: steamdeck
+          containers:
+          - name: ray-worker
+            image: rayproject/ray:2.9.0-py313
+            imagePullPolicy: Always
+            env:
+            # VCN-LUPINE: Critical for VAAPI acceleration
+            - name: LD_PRELOAD
+              value: "/usr/local/lib/vcn-lupine.so"
+            # Node identifier
+            - name: RAY_node_name
+              value: "steamdeck-vaapi-worker"
+            # VAAPI configuration
+            - name: LIBVA_DRIVER_NAME
+              value: "iHD"  # Intel or "r600" for AMD
+            - name: LIBVA_DRIVERS_PATH
+              value: "/usr/lib/x86_64-linux-gnu/dri"
+            resources:
+              limits:
+                memory: "16Gi"
+                cpu: "4"
+              requests:
+                memory: "12Gi"
+                cpu: "2"
+            volumeMounts:
+            # VCN-LUPINE shim
+            - name: vcn-shim
+              mountPath: /usr/local/lib/vcn-lupine.so
+              subPath: vcn-lupine.so
+            # VAAPI device
+            - name: dri
+              mountPath: /dev/dri
+            # Model cache
+            - name: model-cache
+              mountPath: /tmp/gguf-models
+            # Ray logs
+            - name: ray-logs
+              mountPath: /tmp/ray
+          volumes:
+          - name: vcn-shim
+            hostPath:
+              path: /usr/local/lib/vcn-lupine.so
+              type: File
+          - name: dri
+            hostPath:
+              path: /dev/dri
+          - name: model-cache
+            emptyDir:
+              sizeLimit: "20Gi"
+          - name: ray-logs
+            emptyDir: {}
+
+  # =========================================================================
+  # RAY CLUSTER CONFIGURATION
+  # =========================================================================
+  rayClusterConfig:
+    # Enable autoscaling
+    enableInTreeAutoscaling: true
+    # Ray autoscaler configuration
+    autoscaler:
+      enabled: true
+      mode: "Default"
+      cooldown: 60
+      idleTimeout: 300
+    # Resource limits
+    maxWorkerOfRayCluster: 10
+    maxCpuPerWorker: 16
+    maxMemoryPerWorker: 56Gi
+    maxGpuPerWorker: 1
+    # Pod affinity
+    workerPodAffinity: {}
+    # Pod anti-affinity (spread workers across nodes)
+    workerPodAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+          - key: ray.io/ray-node-type
+            operator: In
+            values: [worker]
+        topologyKey: kubernetes.io/hostname
+
+---
+# =============================================================================
+# RAY DASHBOARD SECRET (Apply separately)
+# =============================================================================
+#
+# kubectl create secret generic ray-dashboard-secret -n services \
+#   --from-literal=password=YOUR_RAY_DASHBOARD_PASSWORD
+#
+# =============================================================================

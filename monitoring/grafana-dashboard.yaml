@@ -1,0 +1,426 @@
+# Grafana Dashboard for GGUF Inference Monitoring
+# Version: 1.0.0
+# Date: 2026-06-01
+# Author: Mistral Vibe
+
+# =============================================================================
+# GRAFANA DASHBOARD CONFIGURATION
+# =============================================================================
+#
+# This file creates a Grafana dashboard for monitoring the GGUF inference system.
+#
+# To apply:
+#   kubectl apply -f grafana-dashboard.yaml
+#
+# Dashboard includes:
+# - Overview panel
+# - Request metrics
+# - Performance metrics
+# - Resource usage
+# - Error tracking
+#
+# =============================================================================
+
+apiVersion: integreatly.org/v1alpha1
+kind: GrafanaDashboard
+metadata:
+  name: gguf-inference
+  namespace: monitoring
+  labels:
+    app: grafana
+    component: dashboard
+    version: "1.0.0"
+
+spec:
+  json: |
+    {
+      "title": "GGUF + Ray + VCN-LUPINE - Inference Monitoring",
+      "uid": "gguf-inference-dashboard",
+      "tags": ["gguf", "ray", "vcn", "inference", "monitoring"],
+      "timezone": "",
+      "schemaVersion": 37,
+      "version": 1,
+      "refresh": "15s",
+      "links": [
+        {
+          "title": "Prometheus",
+          "type": "link",
+          "url": "http://prometheus.monitoring.svc.cluster.local:9090"
+        },
+        {
+          "title": "Ray Dashboard",
+          "type": "link",
+          "url": "http://raycluster-head-svc.services.svc.cluster.local:8265"
+        }
+      ],
+      "panels": [
+        {
+          "title": "Overview",
+          "type": "row",
+          "collapsed": false,
+          "panels": [
+            {
+              "title": "Hermes Status",
+              "type": "stat",
+              "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+              "targets": [
+                {
+                  "expr": "up{job=~'hermes|ray-head|ray-workers'}",
+                  "legendFormat": "{{job}}"
+                }
+              ],
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "values": false,
+                  "calcs": ["lastNotNull"],
+                  "fields": ""
+                },
+                "textMode": "auto",
+                "showThresholdLine": false,
+                "showThresholdMarkers": false
+              }
+            },
+            {
+              "title": "Total Requests",
+              "type": "stat",
+              "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+              "targets": [
+                {
+                  "expr": "sum(rate(hermes_http_requests_total[1h]))",
+                  "legendFormat": "Requests/hour"
+                }
+              ],
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "values": false,
+                  "calcs": ["lastNotNull"],
+                  "fields": ""
+                },
+                "textMode": "auto",
+                "showThresholdLine": false,
+                "showThresholdMarkers": false
+              }
+            },
+            {
+              "title": "Active Requests",
+              "type": "stat",
+              "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+              "targets": [
+                {
+                  "expr": "hermes_active_requests",
+                  "legendFormat": "Active"
+                }
+              ],
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto"
+              }
+            },
+            {
+              "title": "Uptime",
+              "type": "stat",
+              "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+              "targets": [
+                {
+                  "expr": "time() - hermes_status_timestamp",
+                  "legendFormat": "Uptime (s)"
+                }
+              ],
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto"
+              }
+            }
+          ]
+        },
+        {
+          "title": "Request Metrics",
+          "type": "row",
+          "collapsed": false,
+          "panels": [
+            {
+              "title": "Requests per Model Type",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+              "targets": [
+                {
+                  "expr": "rate(hermes_inference_requests_total[1m])",
+                  "legendFormat": "{{model_type}} - {{status}}"
+                }
+              ],
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": ["mean", "last", "max", "min"]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "none"
+                }
+              }
+            },
+            {
+              "title": "Request Rate by Endpoint",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+              "targets": [
+                {
+                  "expr": "rate(hermes_http_requests_total[1m])",
+                  "legendFormat": "{{endpoint}} - {{status_code}}"
+                }
+              ],
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "title": "Performance Metrics",
+          "type": "row",
+          "collapsed": false,
+          "panels": [
+            {
+              "title": "Inference Latency (p95)",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+              "targets": [
+                {
+                  "expr": "histogram_quantile(0.95, rate(hermes_inference_latency_seconds_bucket[1m]))",
+                  "legendFormat": "{{model_type}} - p95"
+                },
+                {
+                  "expr": "histogram_quantile(0.99, rate(hermes_inference_latency_seconds_bucket[1m]))",
+                  "legendFormat": "{{model_type}} - p99"
+                }
+              ],
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom"
+                }
+              }
+            },
+            {
+              "title": "HTTP Latency (p95)",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+              "targets": [
+                {
+                  "expr": "histogram_quantile(0.95, rate(hermes_http_request_latency_seconds_bucket[1m]))",
+                  "legendFormat": "{{endpoint}} - p95"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "Token Metrics",
+          "type": "row",
+          "collapsed": false,
+          "panels": [
+            {
+              "title": "Tokens Generated per Request",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+              "targets": [
+                {
+                  "expr": "rate(hermes_inference_tokens_sum[1m]) / rate(hermes_inference_tokens_count[1m])",
+                  "legendFormat": "{{model_type}} - avg tokens"
+                }
+              ]
+            },
+            {
+              "title": "Total Tokens Generated",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+              "targets": [
+                {
+                  "expr": "rate(hermes_inference_tokens_sum[1m])",
+                  "legendFormat": "{{model_type}} - tokens/sec"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "Error Metrics",
+          "type": "row",
+          "collapsed": false,
+          "panels": [
+            {
+              "title": "Error Rate by Model Type",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28},
+              "targets": [
+                {
+                  "expr": "rate(hermes_inference_requests_total{status=\"error\"}[1m]) / rate(hermes_inference_requests_total[1m])",
+                  "legendFormat": "{{model_type}} - error rate"
+                }
+              ],
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom"
+                }
+              }
+            },
+            {
+              "title": "HTTP Errors",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
+              "targets": [
+                {
+                  "expr": "rate(hermes_http_errors_total[1m])",
+                  "legendFormat": "{{endpoint}} - {{error_type}}"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "Resource Usage",
+          "type": "row",
+          "collapsed": false,
+          "panels": [
+            {
+              "title": "Ray Cluster Resources",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 0, "y": 36},
+              "targets": [
+                {
+                  "expr": "ray_cluster_resources_available_cpu",
+                  "legendFormat": "Available CPU"
+                },
+                {
+                  "expr": "ray_cluster_resources_used_cpu",
+                  "legendFormat": "Used CPU"
+                },
+                {
+                  "expr": "ray_cluster_resources_available_memory",
+                  "legendFormat": "Available Memory"
+                },
+                {
+                  "expr": "ray_cluster_resources_used_memory",
+                  "legendFormat": "Used Memory"
+                }
+              ]
+            },
+            {
+              "title": "GPU Usage",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 12, "y": 36},
+              "targets": [
+                {
+                  "expr": "DCGM_FI_DEV_GPU_UTIL{job=\"node-exporter\"}",
+                  "legendFormat": "GPU {{gpu}} - {{device}}"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "Actor Metrics",
+          "type": "row",
+          "collapsed": false,
+          "panels": [
+            {
+              "title": "Actor Health",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 0, "y": 44},
+              "targets": [
+                {
+                  "expr": "gguf_actor_health",
+                  "legendFormat": "{{actor_name}} - {{node}}"
+                }
+              ]
+            },
+            {
+              "title": "Actor Requests",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 12, "y": 44},
+              "targets": [
+                {
+                  "expr": "rate(gguf_actor_requests_total[1m])",
+                  "legendFormat": "{{actor_name}} - {{status}}"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "VCN-LUPINE Metrics",
+          "type": "row",
+          "collapsed": true,
+          "panels": [
+            {
+              "title": "VCN Encode Rate",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 0, "y": 52},
+              "targets": [
+                {
+                  "expr": "rate(vcn_encode_frames_total[1m])",
+                  "legendFormat": "Frames/sec"
+                }
+              ]
+            },
+            {
+              "title": "VCN Latency",
+              "type": "timeseries",
+              "gridPos": {"h": 8, "w": 12, "x": 12, "y": 52},
+              "targets": [
+                {
+                  "expr": "histogram_quantile(0.95, rate(vcn_encode_latency_seconds_bucket[1m]))",
+                  "legendFormat": "p95 encode latency"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "templating": {
+        "list": [
+          {
+            "name": "model_type",
+            "query": "label_values(hermes_inference_requests_total, model_type)",
+            "includeAll": true
+          },
+          {
+            "name": "endpoint",
+            "query": "label_values(hermes_http_requests_total, endpoint)",
+            "includeAll": true
+          }
+        ]
+      },
+      "annotations": {
+        "list": []
+      },
+      "refresh": "15s",
+      "schemaVersion": 37,
+      "style": "dark",
+      "tags": ["gguf", "ray", "vcn"],
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "",
+      "title": "GGUF + Ray + VCN-LUPINE - Inference Monitoring",
+      "version": 1
+    }

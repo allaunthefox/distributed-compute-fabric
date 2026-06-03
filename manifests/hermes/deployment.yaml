@@ -1,0 +1,217 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes
+  namespace: services
+  labels:
+    app: hermes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hermes
+  strategy:
+    type: Recreate  # Ensure clean restart when model changes
+  template:
+    metadata:
+      labels:
+        app: hermes
+      annotations:
+        # Force restart if configmap or secret changes
+        checksum/config: {{ include "hermes-configmap.yaml" | sha256sum }}
+    spec:
+      # Run on neon-64gb ARM64 node where GGUF model is hosted
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        topology.researchstack.io/role: neon
+      tolerations:
+        - key: "dedicated"
+          operator: "Equal"
+          value: "gpu"
+          effect: "NoSchedule"
+      initContainers:
+        # Download model from Garage S3 or HuggingFace if not present on host
+        - name: download-model
+          image: curlimages/curl:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              MODEL_FILE="/models/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+              
+              if [ ! -f "$MODEL_FILE" ]; then
+                echo "Model not found on host, attempting download..."
+                
+                # Try Garage S3 first (internal, faster)
+                echo "Trying Garage S3..."
+                if curl -f -o "$MODEL_FILE" \
+                  "http://100.88.57.96:3900/hermes-models/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf" \
+                  --retry 3 \
+                  --retry-delay 10 \
+                  --fail \
+                  --silent 2>/dev/null; then
+                  chmod 644 "$MODEL_FILE"
+                  echo "✅ Downloaded from Garage S3."
+                else
+                  # Fallback to HuggingFace direct download
+                  echo "Garage S3 failed, trying HuggingFace..."
+                  curl -f -o "$MODEL_FILE" \
+                    "https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive/resolve/main/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf" \
+                    --retry 3 \
+                    --retry-delay 10 \
+                    --fail \
+                    --location
+                  chmod 644 "$MODEL_FILE"
+                  echo "✅ Downloaded from HuggingFace."
+                fi
+                echo "Model downloaded successfully to $MODEL_FILE"
+              else
+                echo "✅ Model already exists on host, skipping download."
+              fi
+              
+              # Verify model file exists
+              if [ ! -f "$MODEL_FILE" ]; then
+                echo "ERROR: Failed to download model file!" >&2
+                exit 1
+              fi
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          env:
+            - name: AWS_ENDPOINT_URL
+              value: "http://100.88.57.96:3900"
+            - name: AWS_REGION
+              value: "garage"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: garage-s3-credentials
+                  key: access-key
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: garage-s3-credentials
+                  key: secret-key
+      containers:
+        - name: hermes
+          # Using a custom container with Python, llama-cpp, etc.
+          # Replace with actual Hermes image when built
+          image: python:3.11-slim
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # Garage S3 configuration (for potential future use)
+            - name: GARAGE_ENDPOINT
+              value: "http://100.88.57.96:3900"
+            - name: GARAGE_BUCKET
+              value: "hermes-models"
+            - name: GARAGE_MODEL_KEY
+              value: "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+            # Model path - uses hostPath mount on neon node
+            - name: MODEL_PATH
+              value: "/models/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+            # AWS-compatible credentials for Garage S3
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: garage-s3-credentials
+                  key: access-key
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: garage-s3-credentials
+                  key: secret-key
+            - name: AWS_ENDPOINT_URL
+              value: "http://100.88.57.96:3900"
+            - name: AWS_REGION
+              value: "garage"
+            - name: AWS_DEFAULT_REGION
+              value: "garage"
+            # Hermes configuration
+            - name: HERMES_PORT
+              value: "8000"
+            - name: HERMES_MODEL_PATH
+              value: "/models/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+            - name: HERMES_CONTEXT_WINDOW
+              value: "8192"
+            - name: HERMES_MAX_TOKENS
+              value: "4096"
+            
+            # ==== ORCHESTRATOR CONFIGURATION ====
+            # URLs for specialist tool models (internal cluster services)
+            - name: CODER_MODEL_URL
+              value: "http://coder-model.services.svc.cluster.local"
+            - name: QWOMPUS_MODEL_URL
+              value: "http://qwopus-model.services.svc.cluster.local"
+            - name: QWEN2_MODEL_URL
+              value: "http://qwen2-model.services.svc.cluster.local"
+            - name: LLAVA_MODEL_URL
+              value: "http://llava-model.services.svc.cluster.local"
+            - name: MATH_MODEL_URL
+              value: "http://coder-model.services.svc.cluster.local"  # Same as coder for now
+            
+            # Orchestration settings
+            - name: ORCHESTRATOR_ENABLED
+              value: "true"
+            - name: ORCHESTRATOR_TIMEOUT_SECONDS
+              value: "60"
+            - name: ORCHESTRATOR_MAX_RETRIES
+              value: "3"
+            
+            # Tool detection patterns (regex for auto-routing)
+            - name: MATH_PATTERN
+              value: "(?:math|proof|equation|theorem|formula|calculate|solve|derive|integrate|\\int|\\sum|\\frac|\\sqrt)"
+            - name: CODE_PATTERN
+              value: "(?:def |class |import |from |for |while |if |else |return |print\(\)|# |// |/\\*|\\*/|python|javascript|java|cpp|rust)"
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          resources:
+            requests:
+              memory: "8Gi"
+              cpu: "2"
+            limits:
+              memory: "16Gi"
+              cpu: "4"
+          # Startup probe - model loading can take time
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 20
+            successThreshold: 1
+          # Liveness probe
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          # Readiness probe
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: models
+          # Primary: hostPath on neon node where GGUF model file resides
+          # Model path: /home/allaun/Downloads/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf
+          hostPath:
+            path: /home/allaun/Downloads
+            type: Directory
+          # Fallback options (commented out):
+          # Option 2: emptyDir (downloads via initContainer)
+          # emptyDir: {}
+          # Option 3: PVC backed by Garage (requires CSI driver + PVC setup)
+          # persistentVolumeClaim:
+          #   claimName: hermes-models-pvc

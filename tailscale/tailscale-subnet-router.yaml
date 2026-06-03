@@ -1,0 +1,389 @@
+# Tailscale Subnet Router for Ray Cluster
+# Version: 1.0.0
+# Date: 2026-06-01
+# Author: Mistral Vibe
+
+# =============================================================================
+# TAILSCALE SUBNET ROUTER - Mesh Networking for Ray Cluster
+# =============================================================================
+#
+# Purpose:
+# - Enables cross-node communication via Tailscale mesh
+# - Allows Ray workers on different physical nodes to communicate
+# - Provides secure, encrypted networking between:
+#   * cupfox (control plane)
+#   * qfox-1 (GPU)
+#   * neon-64gb (ARM64)
+#   * steamdeck (VAAPI)
+#
+# Architecture:
+# - DaemonSet runs on all Kubernetes nodes
+# - Each pod joins Tailscale mesh with unique hostname (node name)
+# - Uses host networking for direct access to physical interfaces
+# - VCN-LUPINE uses Tailscale mesh for GPU acceleration
+#
+# =============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-system
+  labels:
+    name: kube-system
+
+---
+# =============================================================================
+# SERVICE ACCOUNT FOR TAILSCALE
+# =============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tailscale
+  namespace: kube-system
+  labels:
+    app: tailscale
+    component: subnet-router
+
+---
+# =============================================================================
+# TAILSCALE AUTH SECRET
+# =============================================================================
+# CREATE THIS SEPARATELY:
+#
+# kubectl create secret generic tailscale-auth -n kube-system \
+#   --from-literal=authkey=YOUR_TAILSCALE_AUTH_KEY
+#
+# To generate an auth key:
+# 1. Go to https://login.tailscale.com/admin/settings/keys
+# 2. Create a new auth key with:
+#    - Expiration: 1 year (or permanent)
+#    - Reusable: Yes
+#    - Single-use: No
+#    - Tags: (optional) tag:ray-cluster
+#
+# =============================================================================
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tailscale-auth
+  namespace: kube-system
+  labels:
+    app: tailscale
+    component: auth
+
+type: Opaque
+stringData:
+  authkey: "REPLACE_WITH_YOUR_TAILSCALE_AUTH_KEY"
+
+---
+# =============================================================================
+# TAILSCALE SUBNET ROUTER - DAEMONSET
+# =============================================================================
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tailscale-subnet-router
+  namespace: kube-system
+  labels:
+    app: tailscale
+    component: subnet-router
+    version: "1.0.0"
+
+spec:
+  selector:
+    matchLabels:
+      app: tailscale
+      component: subnet-router
+  
+  # Update strategy
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  
+  template:
+    metadata:
+      labels:
+        app: tailscale
+        component: subnet-router
+        version: "1.0.0"
+      annotations:
+        # Required for hostNetwork pods
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    
+    spec:
+      # Critical: Must use host network to access physical interfaces
+      hostNetwork: true
+      
+      # Must use host DNS to resolve other pods
+      dnsPolicy: ClusterFirstWithHostNet
+      
+      # Service account with privileges
+      serviceAccountName: tailscale
+      
+      # Security context - needs elevated privileges
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
+      
+      # Node selector: Run on all nodes with Ray workers
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      
+      # Tolerations for control plane and GPU nodes
+      tolerations:
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "node-role.kubernetes.io/master"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "nvidia.com/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"
+      
+      # Affinity: Ensure one pod per node
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values: [tailscale]
+            topologyKey: kubernetes.io/hostname
+      
+      # Containers
+      containers:
+      - name: tailscale
+        image: tailscale/tailscale:v1.60.0
+        imagePullPolicy: Always
+        
+        # Security context for container
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["NET_ADMIN", "NET_RAW", "SYS_ADMIN"]
+          readOnlyRootFilesystem: false
+          allowPrivilegeEscalation: true
+        
+        # Environment variables
+        env:
+        # Tailscale authentication key (from secret)
+        - name: TS_AUTHKEY
+          valueFrom:
+            secretKeyRef:
+              name: tailscale-auth
+              key: authkey
+        
+        # Tailscale state directory
+        - name: TS_STATE_DIR
+          value: "/var/lib/tailscale"
+        
+        # Use the Kubernetes node name as Tailscale hostname
+        - name: TS_HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        
+        # Single node mode (each pod is its own node)
+        - name: TS_SINGLE_NODE
+          value: "true"
+        
+        # Don't use userspace networking
+        - name: TS_USERSPACE
+          value: "false"
+        
+        # Additional Tailscale options
+        - name: TS_LOG_LEVEL
+          value: "debug"
+        - name: TS_SNAT
+          value: "true"
+        - name: TS_EXPERIMENTAL_ENABLE_NOOP_DRIVER
+          value: "true"
+        
+        # Ports exposed by Tailscale
+        ports:
+        - containerPort: 41641
+          name: tailscale-peer
+          protocol: UDP
+        - containerPort: 41641
+          name: tailscale-peer-tcp
+          protocol: TCP
+        
+        # Lifecycle hooks
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "tailscale down"]
+        
+        # Volume mounts
+        volumeMounts:
+        # Tailscale state directory
+        - name: state
+          mountPath: /var/lib/tailscale
+        
+        # CNI configuration directory
+        - name: cni
+          mountPath: /etc/cni/net.d
+        
+        # Tailscale var/run directory
+        - name: var-run
+          mountPath: /var/run
+        
+        # Kernel modules
+        - name: modules
+          mountPath: /lib/modules
+          readOnly: true
+        
+        # Firmware
+        - name: lib
+          mountPath: /lib/firmware
+          readOnly: true
+        
+        # Tailscale tun device
+        - name: tun
+          mountPath: /dev/net/tun
+        
+        # For debugging
+        - name: tmp
+          mountPath: /tmp
+      
+      # Volumes
+      volumes:
+      # Tailscale state (persistent)
+      - name: state
+        hostPath:
+          path: /var/lib/tailscale
+          type: DirectoryOrCreate
+      
+      # CNI configuration
+      - name: cni
+        hostPath:
+          path: /etc/cni/net.d
+          type: DirectoryOrCreate
+      
+      # Runtime directory
+      - name: var-run
+        hostPath:
+          path: /var/run
+          type: DirectoryOrCreate
+      
+      # Kernel modules
+      - name: modules
+        hostPath:
+          path: /lib/modules
+      
+      # Firmware
+      - name: lib
+        hostPath:
+          path: /lib/firmware
+      
+      # Tun device
+      - name: tun
+        hostPath:
+          path: /dev/net/tun
+      
+      # Temporary files
+      - name: tmp
+        emptyDir: {}
+
+---
+# =============================================================================
+# TAILSCALE SERVICE (Optional - for service discovery)
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: tailscale
+  namespace: kube-system
+  labels:
+    app: tailscale
+    component: subnet-router
+
+spec:
+  selector:
+    app: tailscale
+    component: subnet-router
+  
+  ports:
+  - name: peer-udp
+    port: 41641
+    targetPort: 41641
+    protocol: UDP
+  - name: peer-tcp
+    port: 41641
+    targetPort: 41641
+    protocol: TCP
+  
+  type: ClusterIP
+
+---
+# =============================================================================
+# TAILSCALE RBAC - CLUSTER ROLE
+# =============================================================================
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tailscale
+  labels:
+    app: tailscale
+    component: subnet-router
+
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+  resourceNames: ["tailscale-auth"]
+
+---
+# =============================================================================
+# TAILSCALE RBAC - CLUSTER ROLE BINDING
+# =============================================================================
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tailscale
+  labels:
+    app: tailscale
+    component: subnet-router
+
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tailscale
+
+subjects:
+- kind: ServiceAccount
+  name: tailscale
+  namespace: kube-system
+
+---
+# =============================================================================
+# VERIFICATION COMMANDS
+# =============================================================================
+#
+# 1. Check pods:
+#    kubectl get pods -n kube-system -l app=tailscale
+#
+# 2. Check Tailscale status on a pod:
+#    kubectl exec -it tailscale-subnet-router-<node> -n kube-system -- tailscale status
+#
+# 3. Test connectivity between nodes:
+#    kubectl exec -it tailscale-subnet-router-cupfox -n kube-system -- ping 100.64.19.78
+#    kubectl exec -it tailscale-subnet-router-qfox1 -n kube-system -- ping 100.110.163.82
+#
+# 4. Check Tailscale IP assignments:
+#    kubectl exec -it tailscale-subnet-router-cupfox -n kube-system -- tailscale status --json
+#
+# =============================================================================

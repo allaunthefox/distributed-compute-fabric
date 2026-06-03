@@ -1,0 +1,138 @@
+# Coder Model Deployment - Specialist tool for Hermes orchestrator
+# Runs DeepSeek-Coder-6.7B-Instruct for math/code verification
+# Called internally by Hermes before generating responses
+#
+# Architecture: Hermes (orchestrator) → coder-model (specialist tool)
+# Flow:
+#   1. User sends chat request to Hermes
+#   2. Hermes detects math/code in prompt
+#   3. Hermes calls this service: POST /v1/chat/completions
+#   4. Coder model verifies/analyzes the math
+#   5. Hermes incorporates result into final response
+#
+# Memory: ~6-8GB for 6.7B model with Q4_K_M quantization
+# Context: 32K tokens for handling long proofs
+# Node: Runs on neon-64gb (ARM64) with hostPath to /home/allaun/Downloads
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coder-model
+  namespace: services
+  labels:
+    app: coder-model
+    role: specialist-tool
+    tool-type: coder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: coder-model
+  strategy:
+    type: Recreate  # Clean restart when model changes
+  template:
+    metadata:
+      labels:
+        app: coder-model
+        role: specialist-tool
+        tool-type: coder
+    spec:
+      # Run on neon-64gb ARM64 node
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        topology.researchstack.io/role: neon
+      tolerations:
+        - key: "dedicated"
+          operator: "Equal"
+          value: "gpu"
+          effect: "NoSchedule"
+      containers:
+        - name: deepseek-coder
+          # Official llama.cpp container with ARM64 support
+          image: ghcr.io/ggerganov/llama.cpp:main
+          command:
+            - "llama-server"
+            - "-m"
+            - "/models/DeepSeek-Coder-6.7B-Instruct-Q4_K_M.gguf"
+            - "-c"
+            - "32768"  # 32K context window for long proofs
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--threads"
+            - "4"
+            - "--n-gpu-layers"
+            - "0"  # CPU-only mode (no GPU on neon-64gb currently)
+            - "--log-disable"  # Disable logging to reduce noise
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          env:
+            - name: MODEL_PATH
+              value: "/models/DeepSeek-Coder-6.7B-Instruct-Q4_K_M.gguf"
+            - name: MODEL_NAME
+              value: "deepseek-coder-6.7b-instruct"
+            - name: CONTEXT_WINDOW
+              value: "32768"
+            - name: MAX_TOKENS
+              value: "4096"
+            - name: TEMPERATURE
+              value: "0.1"  # Low temperature for deterministic verification
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+          resources:
+            requests:
+              memory: "6Gi"
+              cpu: "2"
+            limits:
+              memory: "8Gi"
+              cpu: "4"
+          # Startup probe - model loading takes time
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+            successThreshold: 1
+          # Liveness probe
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness probe
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Security context
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: models
+          # Primary: hostPath to neon's Downloads directory
+          # Model: /home/allaun/Downloads/DeepSeek-Coder-6.7B-Instruct-Q4_K_M.gguf
+          hostPath:
+            path: /home/allaun/Downloads
+            type: Directory
+          # Alternative: Use PVC for persistent storage
+          # persistentVolumeClaim:
+          #   claimName: coder-models-pvc

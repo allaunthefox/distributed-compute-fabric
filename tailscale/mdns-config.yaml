@@ -1,0 +1,106 @@
+# Tailscale mDNS Configuration
+# Enables mDNS for service discovery across the Tailscale mesh
+#
+# This allows pods to discover services using .local domain names
+# across the Tailscale network.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tailscale-mdns
+  namespace: kube-system
+  labels:
+    app: tailscale
+    component: subnet-router
+data:
+  # Enable mDNS for service discovery
+  # This allows cross-node service discovery via .local domains
+  mdns-enabled: "true"
+  
+  # mDNS announcement interval (seconds)
+  mdns-announce-interval: "120"
+  
+  # Service types to announce
+  # _http._tcp - HTTP services
+  # _https._tcp - HTTPS services
+  # _ray._tcp - Ray cluster services
+  mdns-services: |
+    _http._tcp
+    _https._tcp
+    _ray._tcp
+    _hermes._tcp
+    _grafana._tcp
+---
+# Tailscale DERP (Designated Encrypted Relay for Packets) Configuration
+# Provides fallback routing when direct peer-to-peer connections fail
+#
+# DERP relays encrypted traffic through Tailscale's infrastructure
+# when direct connections are blocked by NAT/firewall.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tailscale-derp
+  namespace: kube-system
+  labels:
+    app: tailscale
+    component: subnet-router
+data:
+  # Enable DERP fallback
+  derp-enabled: "true"
+  
+  # DERP map configuration
+  # Uses Tailscale's default DERP servers plus custom regional nodes
+  derp-map: |
+    {
+      "Regions": {
+        "1": {
+          "RegionID": 1,
+          "RegionCode": "fra",
+          "RegionName": "Frankfurt",
+          "Nodes": [
+            {
+              "Name": "fra1",
+              "RegionID": 1,
+              "HostName": "fra1.derp.tailscale.com",
+              "IPv4": "37.218.241.92",
+              "IPv6": "2a03:b0c0:2:d0::f000:1"
+            }
+          ]
+        },
+        "2": {
+          "RegionID": 2,
+          "RegionCode": "ord",
+          "RegionName": "Chicago",
+          "Nodes": [
+            {
+              "Name": "ord1",
+              "RegionID": 2,
+              "HostName": "ord1.derp.tailscale.com",
+              "IPv4": "168.235.92.116",
+              "IPv6": "2605:a143:1:8000::f000:1"
+            }
+          ]
+        },
+        "3": {
+          "RegionID": 3,
+          "RegionCode": "netcup",
+          "RegionName": "Netcup (VPS)",
+          "Nodes": [
+            {
+              "Name": "netcup1",
+              "RegionID": 3,
+              "HostName": "172.245.19.182",
+              "IPv4": "172.245.19.182",
+              "DERPPort": 443
+            }
+          ]
+        }
+      }
+    }
+  
+  # Prefer direct connections, use DERP as fallback
+  derp-prefer-direct: "true"
+  
+  # DERP connection timeout (seconds)
+  derp-timeout: "10"

@@ -1,0 +1,126 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: e2a-ebooks
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: local-path
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: e2a-audiobooks
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: local-path
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: e2a-models
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 30Gi
+  storageClassName: local-path
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: e2a-voices
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ebook2audiobook
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ebook2audiobook
+  template:
+    metadata:
+      labels:
+        app: ebook2audiobook
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: e2a
+          image: athomasson2/ebook2audiobook:cu128
+          ports:
+            - containerPort: 7860
+          env:
+            - name: GRADIO_SERVER_NAME
+              value: "0.0.0.0"
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              memory: "16Gi"
+              cpu: "4"
+            requests:
+              memory: "4Gi"
+              cpu: "1"
+          volumeMounts:
+            - name: ebooks
+              mountPath: /app/ebooks
+            - name: audiobooks
+              mountPath: /app/audiobooks
+            - name: models
+              mountPath: /app/models
+            - name: voices
+              mountPath: /app/voices
+            - name: tmp
+              mountPath: /app/tmp
+      volumes:
+        - name: ebooks
+          persistentVolumeClaim:
+            claimName: e2a-ebooks
+        - name: audiobooks
+          persistentVolumeClaim:
+            claimName: e2a-audiobooks
+        - name: models
+          persistentVolumeClaim:
+            claimName: e2a-models
+        - name: voices
+          persistentVolumeClaim:
+            claimName: e2a-voices
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ebook2audiobook
+  namespace: media
+spec:
+  type: NodePort
+  ports:
+    - port: 7860
+      targetPort: 7860
+      nodePort: 30103
+  selector:
+    app: ebook2audiobook

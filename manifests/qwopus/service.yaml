@@ -1,0 +1,36 @@
+# Qwopus3.5-9B-Coder-MTP Model Service
+# ClusterIP for internal Kubernetes DNS
+# Called by Hermes orchestrator at: http://qwopus-model.services.svc.cluster.local
+#
+# This service is NOT exposed publicly. It's only accessible:
+# - Within the k3s cluster (other pods in same namespace)
+# - By Hermes pod (orchestrator) for tool calling
+#
+# Comparison with coder-model:
+#   - qwopus-model: Code GENERATION specialist (writing new code)
+#   - coder-model: Code ANALYSIS specialist (reviewing code)
+#
+# Endpoints:
+#   POST /v1/chat/completions - OpenAI-compatible chat endpoint
+#   GET  /v1/models            - List loaded models
+#   GET  /health               - Health check
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwopus-model
+  namespace: services
+  labels:
+    app: qwopus-model
+    role: specialist-tool
+    tool-type: coder
+    coder-type: generation
+spec:
+  type: ClusterIP
+  selector:
+    app: qwopus-model
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP

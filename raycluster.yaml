@@ -1,0 +1,160 @@
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: raycluster
+  namespace: ray-system
+spec:
+  rayVersion: "2.41.0.dev0"
+  headGroupSpec:
+    serviceType: ClusterIP
+    rayStartParams:
+      num-cpus: "0"
+      dashboard-host: "0.0.0.0"
+      dashboard: "true"
+    template:
+      spec:
+        tolerations:
+        - key: "desktop"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+        containers:
+        - name: ray-head
+          image: rayproject/ray:nightly-py313-gpu
+          ports:
+          - containerPort: 6379
+            name: gcs
+          - containerPort: 8265
+            name: dashboard
+          - containerPort: 10001
+            name: client
+          - containerPort: 8000
+            name: serve
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          volumeMounts:
+          - name: dshm
+            mountPath: /dev/shm
+          - name: dri
+            mountPath: /dev/dri
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+        - name: dri
+          hostPath:
+            path: /dev/dri
+        nodeSelector:
+          kubernetes.io/hostname: qfox-1
+  workerGroupSpecs:
+  - replicas: 2
+    minReplicas: 0
+    maxReplicas: 6
+    groupName: cpu-workers
+    rayStartParams:
+      num-cpus: "4"
+    template:
+      spec:
+        tolerations:
+        - key: "desktop"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+        containers:
+        - name: ray-worker
+          image: rayproject/ray:nightly-py313-gpu
+          resources:
+            requests:
+              cpu: "4"
+              memory: "4Gi"
+            limits:
+              cpu: "8"
+              memory: "8Gi"
+          volumeMounts:
+          - name: dshm
+            mountPath: /dev/shm
+          - name: dri
+            mountPath: /dev/dri
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+        - name: dri
+          hostPath:
+            path: /dev/dri
+        nodeSelector:
+          kubernetes.io/hostname: qfox-1
+  - replicas: 1
+    minReplicas: 0
+    maxReplicas: 1
+    groupName: gpu-workers
+    rayStartParams:
+      num-gpus: "1"
+    template:
+      spec:
+        tolerations:
+        - key: "desktop"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+        containers:
+        - name: ray-worker
+          image: rayproject/ray:nightly-py313-gpu
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+            limits:
+              cpu: "4"
+              memory: "16Gi"
+          volumeMounts:
+          - name: dshm
+            mountPath: /dev/shm
+          - name: dri
+            mountPath: /dev/dri
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+        - name: dri
+          hostPath:
+            path: /dev/dri
+        nodeSelector:
+          kubernetes.io/hostname: qfox-1
+  - replicas: 1
+    minReplicas: 0
+    maxReplicas: 3
+    groupName: arm64-workers
+    rayStartParams:
+      num-cpus: "16"
+    template:
+      spec:
+        containers:
+        - name: ray-worker
+          image: localhost/rayproject/ray:arm64-aarch64
+          resources:
+            requests:
+              cpu: "8"
+              memory: "16Gi"
+            limits:
+              cpu: "16"
+              memory: "56Gi"
+          volumeMounts:
+          - name: dshm
+            mountPath: /dev/shm
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        nodeSelector:
+          kubernetes.io/arch: arm64
+          kubernetes.io/hostname: neon-64gb

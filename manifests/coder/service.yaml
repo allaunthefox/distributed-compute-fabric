@@ -1,0 +1,30 @@
+# Coder Model Service - ClusterIP for internal Kubernetes DNS
+# Called by Hermes orchestrator at: http://coder-model.services.svc.cluster.local
+#
+# This service is NOT exposed publicly. It's only accessible:
+# - Within the k3s cluster (other pods in same namespace)
+# - By Hermes pod (orchestrator) for tool calling
+#
+# Endpoints:
+#   POST /v1/chat/completions - OpenAI-compatible chat endpoint
+#   GET  /v1/models            - List loaded models
+#   GET  /health               - Health check
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: coder-model
+  namespace: services
+  labels:
+    app: coder-model
+    role: specialist-tool
+    tool-type: coder
+spec:
+  type: ClusterIP
+  selector:
+    app: coder-model
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP

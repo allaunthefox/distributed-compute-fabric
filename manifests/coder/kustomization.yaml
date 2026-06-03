@@ -1,0 +1,25 @@
+# Kustomization for Coder Model deployment
+# Applies deployment + service for the DeepSeek-Coder specialist tool
+#
+# This is used by:
+#   kubectl apply -k manifests/coder/
+#
+# Dependencies:
+#   - Model file must be at /home/allaun/Downloads/DeepSeek-Coder-6.7B-Instruct-Q4_K_M.gguf on neon-64gb
+#   - neon-64gb node must be joined to cluster with role=neon label
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+
+# Optional: Add namespace if not already created
+# namespace: services
+
+# Common labels for all resources
+commonLabels:
+  component: coder-model
+  tier: backend
+  role: specialist-tool

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: actual-budget
+  namespace: services
+spec:
+  type: NodePort
+  ports:
+  - port: 5006
+    targetPort: 5006
+    nodePort: 30815
+    protocol: TCP
+    name: http
+  selector:
+    app: actual-budget

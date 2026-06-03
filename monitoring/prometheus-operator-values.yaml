@@ -1,0 +1,59 @@
+# Prometheus Operator Helm values for GGUF-Ray-VCN-LUPINE deployment
+# Version: 58.0.0
+
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    retention: 30d
+    retentionSize: "50GiB"
+    resources:
+      requests:
+        memory: 2Gi
+        cpu: 1
+      limits:
+        memory: 4Gi
+        cpu: 2
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          resources:
+            requests:
+              storage: 50Gi
+
+grafana:
+  enabled: true
+  adminPassword: "${GRAFANA_ADMIN_PASSWORD}"
+  ingress:
+    enabled: false  # We'll use our own IngressRoute
+  service:
+    type: ClusterIP
+  persistence:
+    enabled: true
+    storageClassName: longhorn
+    size: 10Gi
+
+alertmanager:
+  enabled: true
+  config:
+    global:
+      resolve_timeout: 5m
+      http_config:
+        tls_config:
+          insecure_skip_verify: true
+    receivers:
+    - name: default-receiver
+      slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#alerts"
+        send_resolved: true
+        title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+        text: '{{ .CommonAnnotations.description }}'
+
+    route:
+      group_by: ['alertname', 'severity']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 3h
+      receiver: default-receiver

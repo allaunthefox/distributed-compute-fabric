@@ -1,0 +1,328 @@
+# Hermes Orchestrator Deployment
+# Version: 1.0.0
+# Date: 2026-06-01
+# Author: Mistral Vibe
+
+# =============================================================================
+# HERMES ORCHESTRATOR - FastAPI REST API for GGUF Inference
+# =============================================================================
+#
+# Deployments:
+# - Hermes FastAPI server (cupfox)
+# - Prometheus metrics endpoint
+#
+# Architecture:
+# - Listens on port 8000 (HTTP)
+# - Routes requests to FrameDispatcher (Ray)
+# - Integrates with existing Ray cluster
+# - VCN-LUPINE acceleration via Ray actors
+#
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes
+  namespace: hermes
+  labels:
+    app: hermes
+    component: orchestrator
+    version: "1.0.0"
+
+spec:
+  # Single replica for now (can scale horizontally if needed)
+  replicas: 1
+  
+  # Rolling update strategy
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  
+  # Pod selector
+  selector:
+    matchLabels:
+      app: hermes
+      component: orchestrator
+  
+  # Pod template
+  template:
+    metadata:
+      labels:
+        app: hermes
+        component: orchestrator
+        version: "1.0.0"
+      annotations:
+        # Tailscale annotation for mesh networking
+        tailscale.com/host: "cupfox"
+        # Prometheus scraping
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8001"
+        prometheus.io/path: "/metrics"
+    
+    spec:
+      # Pinned to cupfox (control plane node)
+      nodeSelector:
+        kubernetes.io/hostname: cupfox
+      
+      # Tolerate control plane taints
+      tolerations:
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "node-role.kubernetes.io/master"
+        operator: "Exists"
+        effect: "NoSchedule"
+      
+      # Security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      
+      # Containers
+      containers:
+      - name: hermes
+        image: ghcr.io/youruser/gguf-ray:latest
+        imagePullPolicy: Always
+        
+        # Command: Start Uvicorn server
+        command: ["/bin/sh", "-c"]
+        args:
+        - "uvicorn hermes.orchestrator:app "
+          "--host 0.0.0.0 "
+          "--port 8000 "
+          "--workers 4 "
+          "--timeout-keep-alive 30 "
+          "--log-level info"
+        
+        # Environment variables
+        env:
+        # Ray configuration
+        - name: RAY_ADDRESS
+          value: "auto"  # Auto-discover Ray cluster
+        - name: RAY_IGNORE_UNHANDLED_ERRORS
+          value: "1"
+        
+        # VCN-LUPINE: Load shim
+        - name: LD_PRELOAD
+          value: "/usr/local/lib/vcn-lupine.so"
+        
+        # Application configuration
+        - name: HERMES_ENV
+          value: "production"
+        - name: HERMES_LOG_LEVEL
+          value: "INFO"
+        - name: HERMES_MAX_REQUEST_SIZE
+          value: "32768"  # Max tokens
+        - name: HERMES_TIMEOUT
+          value: "300"  # 5 minute timeout
+        
+        # Garage S3 for model storage
+        - name: GARAGE_S3_ENDPOINT
+          value: "http://100.88.57.96:3900"
+        - name: GARAGE_S3_BUCKET
+          value: "models"
+        
+        # Prometheus metrics
+        - name: PROMETHEUS_MULTIPROC_DIR
+          value: "/tmp/prometheus"
+        
+        # Ports
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        - containerPort: 8001
+          name: metrics
+          protocol: TCP
+        
+        # Resource limits
+        resources:
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+        
+        # Liveness probe
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Readiness probe
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        # Startup probe (for slow startup)
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        
+        # Volume mounts
+        volumeMounts:
+        # VCN-LUPINE shim
+        - name: vcn-shim
+          mountPath: /usr/local/lib/vcn-lupine.so
+          subPath: vcn-lupine.so
+        # Model cache
+        - name: model-cache
+          mountPath: /tmp/gguf-models
+        # Prometheus metrics
+        - name: prometheus
+          mountPath: /tmp/prometheus
+        # Ray logs
+        - name: ray-logs
+          mountPath: /tmp/ray
+        # Temporary files
+        - name: tmp
+          mountPath: /tmp
+      
+      # Volumes
+      volumes:
+      - name: vcn-shim
+        hostPath:
+          path: /usr/local/lib/vcn-lupine.so
+          type: File
+      - name: model-cache
+        emptyDir:
+          sizeLimit: "5Gi"
+      - name: prometheus
+        emptyDir: {}
+      - name: ray-logs
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+
+---
+# =============================================================================
+# HERMES SERVICE
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes
+  namespace: services
+  labels:
+    app: hermes
+    component: orchestrator
+  annotations:
+    # Tailscale service discovery
+    tailscale.com/expose: "true"
+
+spec:
+  selector:
+    app: hermes
+    component: orchestrator
+  
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8000
+    targetPort: 8000
+  - name: metrics
+    protocol: TCP
+    port: 8001
+    targetPort: 8001
+  
+  type: ClusterIP
+
+---
+# =============================================================================
+# HERMES INGRESS (HTTPS)
+# =============================================================================
+
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: hermes
+  namespace: services
+  labels:
+    app: hermes
+    component: orchestrator
+
+spec:
+  # HTTPS only
+  entryPoints:
+    - websecure
+  
+  routes:
+  - match: Host(`hermes.yourdomain.com`)
+    kind: Rule
+    services:
+    - name: hermes
+      port: 8000
+    middlewares:
+    - name: hermes-cors
+      namespace: services
+  
+  # TLS configuration
+  tls:
+    secretName: hermes-tls
+
+---
+# =============================================================================
+# CORS MIDDLEWARE FOR HERMES
+# =============================================================================
+
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: hermes-cors
+  namespace: services
+
+spec:
+  headers:
+    accessControlAllowMethods:
+      - GET
+      - POST
+      - OPTIONS
+      - PUT
+      - DELETE
+    accessControlAllowOriginList:
+      - "*"
+    accessControlAllowHeaders:
+      - "*"
+    accessControlExposeHeaders:
+      - "*"
+    accessControlMaxAge: 86400
+    addVaryHeader: true
+
+---
+# =============================================================================
+# SECRETS (Apply separately or use SealedSecrets)
+# =============================================================================
+#
+# Ray Dashboard Secret:
+# kubectl create secret generic ray-dashboard-secret -n services \
+#   --from-literal=password=YOUR_PASSWORD
+#
+# TLS Secret (for HTTPS):
+# kubectl create secret tls hermes-tls -n services \
+#   --cert=hermes.crt --key=hermes.key
+#
+# Garage S3 Credentials (if needed):
+# kubectl create secret generic garage-s3-creds -n services \
+#   --from-literal=access-key=YOUR_ACCESS_KEY \
+#   --from-literal=secret-key=YOUR_SECRET_KEY
+#
+# =============================================================================
