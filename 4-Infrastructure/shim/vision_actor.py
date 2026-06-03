@@ -65,15 +65,16 @@ import ray
 logger = logging.getLogger(__name__)
 
 # Model configuration
+GARAGE_S3_ENDPOINT = os.environ.get("GARAGE_S3_ENDPOINT", "http://100.88.57.96:3900")
 MODEL_URL = os.environ.get(
     "LLAVA_MODEL_URL",
-    "http://100.88.57.96:3900/models/Llava-1.5-7B-Q4_K_M.gguf"
+    f"{GARAGE_S3_ENDPOINT}/models/Llava-1.5-7B-Q4_K_M.gguf"
 )
 
 # MMProj file (required for vision models)
 MMPROJ_URL = os.environ.get(
     "LLAVA_MMPROJ_URL",
-    "http://100.88.57.96:3900/models/Llava-1.5-7B-mmproj-Q4_K_M.gguf"
+    f"{GARAGE_S3_ENDPOINT}/models/Llava-1.5-7B-mmproj-Q4_K_M.gguf"
 )
 
 

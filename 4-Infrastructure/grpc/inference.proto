@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package inference;
+
+option java_package = "com.researchstack.inference";
+option go_package = "github.com/researchstack/distributed-compute-fabric/inference";
+
+// Inference service - optional gRPC layer for streaming token generation
+// Proxies to llama.cpp HTTP servers underneath
+service InferenceService {
+  // Unary request - simple prompt → response
+  rpc Generate(GenerateRequest) returns (GenerateResponse);
+  
+  // Server streaming - tokens stream back as they generate
+  rpc GenerateStream(GenerateRequest) returns (stream TokenChunk);
+  
+  // Bidirectional streaming - for multi-turn conversations
+  rpc Chat(stream ChatMessage) returns (stream TokenChunk);
+  
+  // Health check
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message GenerateRequest {
+  string model = 1;
+  string prompt = 2;
+  int32 max_tokens = 3;
+  float temperature = 4;
+  float top_p = 5;
+  bool stream = 6;
+  map<string, string> extra_params = 7;
+}
+
+message GenerateResponse {
+  string text = 1;
+  int32 tokens_used = 2;
+  float latency_ms = 3;
+  string model = 4;
+}
+
+message TokenChunk {
+  string token = 1;
+  bool is_final = 2;
+  int32 index = 3;
+}
+
+message ChatMessage {
+  string role = 1;  // "user" or "assistant"
+  string content = 2;
+}
+
+message HealthRequest {
+  string model = 1;
+}
+
+message HealthResponse {
+  bool healthy = 1;
+  string model = 2;
+  int32 loaded_layers = 3;
+  int64 context_size = 4;
+}

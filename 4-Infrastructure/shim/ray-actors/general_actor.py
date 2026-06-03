@@ -61,9 +61,10 @@ import ray
 logger = logging.getLogger(__name__)
 
 # Model configuration
+GARAGE_S3_ENDPOINT = os.environ.get("GARAGE_S3_ENDPOINT", "http://100.88.57.96:3900")
 MODEL_URL = os.environ.get(
     "GEMMA_MODEL_URL",
-    "http://100.88.57.96:3900/models/Gemma-4-E4B-Uncensored-Q8_K_P.gguf"
+    f"{GARAGE_S3_ENDPOINT}/models/Gemma-4-E4B-Uncensored-Q8_K_P.gguf"
 )
 
 

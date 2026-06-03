@@ -42,9 +42,10 @@ import ray
 logger = logging.getLogger(__name__)
 
 # Model configuration
+GARAGE_S3_ENDPOINT = os.environ.get("GARAGE_S3_ENDPOINT", "http://100.88.57.96:3900")
 MODEL_URL = os.environ.get(
     "DEEPSEEK_MODEL_URL",
-    "http://100.88.57.96:3900/models/DeepSeek-Coder-6.7B-Instruct-Q4_K_M.gguf"
+    f"{GARAGE_S3_ENDPOINT}/models/DeepSeek-Coder-6.7B-Instruct-Q4_K_M.gguf"
 )
 
 

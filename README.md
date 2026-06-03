@@ -1,104 +1,120 @@
 # Distributed Compute Fabric
 
-Infrastructure-as-code patterns for distributed resource management and computing.
+Generic compute fabric infrastructure. Not research-specific.
 
-## Overview
+## What This Is
 
-This repository provides generic, reusable infrastructure patterns for distributed computing systems. It focuses on standard tools and configurations that can be applied across different domains, not specific to any particular research or application area.
+Hardware-agnostic compute substrate. Accelerates ANY compute type via:
+- Voltage-mode routing (STORE/COMPUTE/APPROX/MORPHIC)
+- Spatial hash indexing (16×16×16 grid in GPU memory)
+- VCN/LUPINE hardware acceleration (H.264-encoded compute)
+- Ray distributed scheduling across heterogeneous nodes
 
-## Core Components
+## Components
 
-### Ray Cluster
-- **Purpose**: Distributed computing framework with generic resource scheduling
-- **Components**:
-  - Ray cluster deployment manifests
-  - Redis backend for Ray coordination
-  - Generic compute actors for common patterns
+### Compute Layer
+| Component | Purpose |
+|-----------|---------|
+| `vcn_lupine_daemon.py` | VCN/LUPINE hardware acceleration daemon |
+| `vcn_lupine_bridge_spec.md` | VCN frame encoding specification |
+| `spatial-hash-gpu/` | WebGPU GridStorage — vectorless graph database |
+| `lytenyte-storage/` | Spatial hash visualization dashboard |
 
-### Kubernetes Infrastructure
-- **Purpose**: Container orchestration and cluster management
-- **Components**:
-  - Standard Kubernetes service manifests
-  - Ingress configurations and routing
-  - Core networking patterns
+### Orchestration
+| Component | Purpose |
+|-----------|---------|
+| `hermes/` | Voltage-mode orchestrator (routes compute to GPU/ARM/VCN) |
+| `manifests/hermes/` | Kubernetes deployment manifests |
+| `ray-actors/` | Generic Ray compute actors |
 
-### Monitoring Stack
-- **Purpose**: Observability and monitoring for distributed systems
-- **Components**:
-  - Prometheus for metrics collection
-  - Grafana for visualization
-  - Service monitors for Kubernetes integration
+### Hardware Abstractions
+| Component | Purpose |
+|-----------|---------|
+| `0-Core-Formalism/lean/Semantics/BraidVCNBridge.lean` | Formal braid-to-VCN mapping spec |
+| Virtio-Net | DMA ring buffer compute substrate |
+| SPIR-V | Shader compilation target |
+| QEMU framebuffer | `/dev/fb0` compute target |
 
-## Structure
+### Infrastructure
+| Component | Purpose |
+|-----------|---------|
+| `4-Infrastructure/ray/` | Ray cluster manifests |
+| `4-Infrastructure/monitoring/` | Prometheus/Grafana stack |
+| `4-Infrastructure/tailscale/` | Subnet router for cross-node networking |
+| `4-Infrastructure/shim/` | Python actors and utilities |
+
+## Architecture
 
 ```
-distributed-compute-fabric/
-├── 4-Infrastructure/
-│   ├── kubernetes/             # Kubernetes manifests
-│   │   ├── ray/               # Ray cluster configuration
-│   │   ├── monitoring/        # Prometheus/Grafana stack
-│   │   └── kube/              # Additional Kubernetes configs
-│   ├── shim/
-│   │   └── ray-actors/        # Generic Ray compute actors
-│   └── AGENTS.md              # Infrastructure guidelines
-└── README.md                  # This file
+                    ┌─────────────────┐
+                    │   Caddy Edge    │
+                    │ (TLS + Routing) │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ Hermes Orchestr │
+                    │ (Voltage Modes) │
+                    └────────┬────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+     ┌────────▼───────┐ ┌───▼────┐ ┌──────▼──────┐
+     │ GPU (qfox-1)   │ │ ARM    │ │ VCN/LUPINE  │
+     │ CUDA + VRAM    │ │ (neon) │ │ H.264 enc   │
+     └────────────────┘ └────────┘ └─────────────┘
+              │              │              │
+              └──────────────┼──────────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ Spatial Hash    │
+                    │ (16³ = 4096)    │
+                    │ GPU Buffer      │
+                    └─────────────────┘
 ```
 
-## Origin
+## Node Roles
 
-This repository was extracted from the Research Stack on 2026-06-02, then refined on 2026-06-02 to focus on infrastructure-as-code patterns. Research-stack-specific components (VCN, LyteNyte, Braid encoding, ML-specific actors, etc.) were removed to create a generic, reusable infrastructure foundation.
+| Node | Role | Hardware |
+|------|------|----------|
+| cupfox | Control plane | k3s, kuberay-operator, Authentik, Caddy |
+| neon-64gb | Heavy lifting | ARM64, Hermes, Gemma model |
+| qfox-1 | GPU compute | RTX 4070, CUDA, VCN-LUPINE |
+| steamdeck | VAAPI + Ray | VAAPI encode, Ray head + workers |
+| nixos | AMD GPU | ROCm |
+| racknerd | Edge | Public ingress |
 
-## What Was Removed
+## Quick Start
 
-The following research-stack-specific components were removed during refinement:
-- k3s-flake (NixOS-specific configurations)
-- VCN (Video Compute Node) - video encoding infrastructure
-- LyteNyte - research-specific storage system
-- Braid encoding - specialized compression algorithms
-- Spatial Hash - domain-specific indexing
-- Hermes orchestration - research task orchestration
-- ML-specific actors (GGUF, DeepSeek, Vision)
-- Lean formalization - mathematical proof components
-- Application dashboards - UI components
-- Research-specific documentation
-
-## Usage
-
-### Ray Cluster Deployment
 ```bash
-kubectl apply -f 4-Infrastructure/kubernetes/ray/
+# Deploy Hermes orchestrator
+kubectl apply -f manifests/hermes/
+
+# Deploy Ray cluster
+kubectl apply -f 4-Infrastructure/ray/raycluster.yaml
+
+# Deploy monitoring
+kubectl apply -f 4-Infrastructure/monitoring/
+
+# Build LyteNyte dashboard
+cd 5-Applications/dashboard/lytenyte-storage && npm install && npm run dev
 ```
 
-### Monitoring Stack
-```bash
-kubectl apply -f 4-Infrastructure/kubernetes/monitoring/
-```
+## Configuration
 
-### Generic Actor Patterns
-```bash
-# Use the generic actor patterns as templates
-from distributed_compute_fabric.shim.ray_actors import general_actor, coder_actor
-```
+All hardcoded values should be replaced with environment variables:
 
-## Infrastructure as Code Principles
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GARAGE_S3_ENDPOINT` | `http://100.88.57.96:3900` | S3 storage endpoint |
+| `LUPINE_GPU_NODE` | `100.88.57.96` | GPU node for VCN acceleration |
+| `MAIN_MODEL_URL` | `http://gemma-model.services.svc.cluster.local` | Primary inference endpoint |
+| `HERMES_PORT` | `8080` | Orchestrator listen port |
 
-This repository follows these principles:
+## Voltage Modes
 
-1. **Declarative Configuration**: Use Kubernetes manifests for reproducible deployments
-2. **Generic Patterns**: Avoid domain-specific optimizations in core infrastructure
-3. **Observable Design**: Include monitoring and logging patterns by default
-4. **Modular Components**: Keep Ray, Kubernetes, and monitoring as separate concerns
-5. **Standard Tools**: Use industry-standard tools (Ray, Kubernetes, Prometheus)
-
-## Contributing
-
-When adding new components:
-- Keep patterns generic and reusable across domains
-- Avoid domain-specific optimizations or algorithms
-- Include appropriate monitoring and observability
-- Document the infrastructure pattern clearly
-- Test with standard tools (kubectl, ray CLI)
-
-## License
-
-Same license as parent Research Stack repository.
+| Mode | Purpose | Hardware |
+|------|---------|----------|
+| STORE | Persistent storage | S3, NVMe |
+| COMPUTE | Active computation | GPU, CPU |
+| APPROX | Approximate/sampling | ARM64, quantized models |
+| MORPHIC | Adaptive/topological | VCN-LUPINE, braid encoding |
