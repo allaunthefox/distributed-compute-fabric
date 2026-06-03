@@ -1,0 +1,139 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bazarr-config
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bazarr
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bazarr
+  template:
+    metadata:
+      labels:
+        app: bazarr
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: bazarr
+          image: lscr.io/linuxserver/bazarr:latest
+          ports:
+            - containerPort: 6767
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "100"
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: media
+              mountPath: /media/movies
+              subPath: movies
+            - name: media
+              mountPath: /media/tv
+              subPath: tv
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: bazarr-config
+        - name: media
+          persistentVolumeClaim:
+            claimName: media-store
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bazarr
+  namespace: media
+spec:
+  type: NodePort
+  ports:
+    - port: 6767
+      targetPort: 6767
+      nodePort: 30088
+  selector:
+    app: bazarr
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: navidrome-config
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: navidrome
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: navidrome
+  template:
+    metadata:
+      labels:
+        app: navidrome
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: navidrome
+          image: deluan/navidrome:latest
+          ports:
+            - containerPort: 4533
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "100"
+          volumeMounts:
+            - name: config
+              mountPath: /data
+            - name: media
+              mountPath: /music
+              subPath: music
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: navidrome-config
+        - name: media
+          persistentVolumeClaim:
+            claimName: media-store
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: navidrome
+  namespace: media
+spec:
+  type: NodePort
+  ports:
+    - port: 4533
+      targetPort: 4533
+      nodePort: 30089
+  selector:
+    app: navidrome

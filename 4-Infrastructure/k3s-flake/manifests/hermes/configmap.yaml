@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-placeholder
+  namespace: services
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Hermes — Research Stack</title>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #1a1a2e; color: #eee; }
+        .card { text-align: center; padding: 3rem; border-radius: 12px; background: #16213e; box-shadow: 0 4px 24px rgba(0,0,0,0.3); }
+        h1 { margin: 0 0 0.5rem; }
+        p { color: #aaa; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>Hermes</h1>
+        <p>Chat / orchestrator — coming soon.</p>
+        <p style="font-size:0.8rem; color:#666;">This placeholder will be replaced with the Hermes container.</p>
+      </div>
+    </body>
+    </html>

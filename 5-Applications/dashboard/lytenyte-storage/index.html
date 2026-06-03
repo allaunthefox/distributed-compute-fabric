@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Research Stack — Spatial Hash Grid Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0a0a0a; color: #e0e0e0; }
+    .header { padding: 16px 24px; border-bottom: 1px solid #222; display: flex; align-items: center; gap: 16px; }
+    .header h1 { font-size: 14px; font-weight: 600; color: #fff; }
+    .header .stats { font-size: 12px; color: #888; }
+    .header .stats span { color: #4ade80; }
+    .controls { padding: 12px 24px; border-bottom: 1px solid #222; display: flex; gap: 12px; align-items: center; }
+    .controls button { background: #1a1a1a; border: 1px solid #333; color: #e0e0e0; padding: 6px 12px; font-size: 11px; cursor: pointer; font-family: inherit; }
+    .controls button:hover { background: #2a2a2a; border-color: #555; }
+    .controls button.active { background: #166534; border-color: #4ade80; color: #4ade80; }
+    .controls select { background: #1a1a1a; border: 1px solid #333; color: #e0e0e0; padding: 6px 8px; font-size: 11px; font-family: inherit; }
+    .controls label { font-size: 11px; color: #888; }
+    .grid-container { height: calc(100vh - 100px); overflow: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { background: #111; border-bottom: 1px solid #333; padding: 8px 12px; text-align: left; font-weight: 600; color: #888; position: sticky; top: 0; cursor: pointer; user-select: none; }
+    th:hover { color: #fff; }
+    th.sorted-asc::after { content: ' ▲'; color: #4ade80; }
+    th.sorted-desc::after { content: ' ▼'; color: #4ade80; }
+    td { border-bottom: 1px solid #1a1a1a; padding: 6px 12px; }
+    tr:hover { background: #1a1a1a; }
+    tr.selected { background: #166534; }
+    .mode-STORE { color: #ef4444; }
+    .mode-COMPUTE { color: #22c55e; }
+    .mode-APPROX { color: #3b82f6; }
+    .mode-MORPHIC { color: #fff; font-weight: 600; }
+    .density-bar { display: inline-block; height: 12px; background: #4ade80; border-radius: 2px; vertical-align: middle; }
+    .fd-bar { display: inline-block; height: 12px; background: #3b82f6; border-radius: 2px; vertical-align: middle; }
+    .empty { text-align: center; color: #555; padding: 40px; }
+    .detail-panel { position: fixed; right: 0; top: 100px; width: 300px; height: calc(100vh - 100px); background: #111; border-left: 1px solid #333; padding: 16px; overflow-y: auto; display: none; }
+    .detail-panel.visible { display: block; }
+    .detail-panel h3 { font-size: 12px; color: #888; margin-bottom: 12px; }
+    .detail-panel .field { margin-bottom: 8px; }
+    .detail-panel .field label { font-size: 10px; color: #666; display: block; }
+    .detail-panel .field value { font-size: 13px; color: #e0e0e0; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Spatial Hash Grid</h1>
+    <div class="stats">
+      Cells: <span id="stat-total">0</span> |
+      Occupied: <span id="stat-occupied">0</span> |
+      Particles: <span id="stat-particles">0</span> |
+      Filtered: <span id="stat-filtered">0</span> |
+      Max Density: <span id="stat-max-density">0</span>
+    </div>
+  </div>
+  <div class="controls">
+    <button onclick="insertParticles()">1: Insert</button>
+    <button onclick="clearGrid()">2: Clear</button>
+    <button onclick="filterGrid()">3: Filter</button>
+    <button onclick="neighborScan()">4: Neighbors</button>
+    <button onclick="sortGrid()">5: Sort</button>
+    <label>Mode filter:</label>
+    <select id="mode-filter" onchange="filterByMode()">
+      <option value="all">All</option>
+      <option value="STORE">STORE</option>
+      <option value="COMPUTE">COMPUTE</option>
+      <option value="APPROX">APPROX</option>
+      <option value="MORPHIC">MORPHIC</option>
+    </select>
+    <label>Min density:</label>
+    <input type="number" id="min-density" value="0" min="0" max="255" style="width:60px;background:#1a1a1a;border:1px solid #333;color:#e0e0e0;padding:4px;font-size:11px;" onchange="filterByDensity()">
+  </div>
+  <div class="grid-container" id="grid-container">
+    <table>
+      <thead>
+        <tr>
+          <th data-col="index">#</th>
+          <th data-col="x" onclick="sortBy('x')">X</th>
+          <th data-col="y" onclick="sortBy('y')">Y</th>
+          <th data-col="z" onclick="sortBy('z')">Z</th>
+          <th data-col="density" onclick="sortBy('density')">Density</th>
+          <th data-col="fd" onclick="sortBy('fd')">FD</th>
+          <th data-col="voltage_mode" onclick="sortBy('voltage_mode')">Mode</th>
+          <th data-col="particle_count" onclick="sortBy('particle_count')">Particles</th>
+          <th data-col="max_neighbor" onclick="sortBy('max_neighbor')">Max Neighbor</th>
+        </tr>
+      </thead>
+      <tbody id="grid-body">
+      </tbody>
+    </table>
+  </div>
+  <div class="detail-panel" id="detail-panel">
+    <h3>Cell Detail</h3>
+    <div id="detail-content"></div>
+  </div>
+
+  <script>
+    // ── Grid State (matches GPU buffer layout) ──────────────────────────────
+    const GRID_SIZE = 16;
+    const CELL_COUNT = GRID_SIZE * GRID_SIZE * GRID_SIZE;
+    const MODES = ['STORE', 'COMPUTE', 'APPROX', 'MORPHIC'];
+    const MODE_COLORS = { STORE: '#ef4444', COMPUTE: '#22c55e', APPROX: '#3b82f6', MORPHIC: '#ffffff' };
+
+    // Cell struct: x, y, z, density, fd, voltage_mode, particle_count, max_neighbor
+    let grid = new Array(CELL_COUNT).fill(null).map((_, i) => ({
+      index: i,
+      x: i % GRID_SIZE,
+      y: Math.floor(i / GRID_SIZE) % GRID_SIZE,
+      z: Math.floor(i / (GRID_SIZE * GRID_SIZE)),
+      density: 0,
+      fd: 2.0,
+      voltage_mode: 0,
+      particle_count: 0,
+      max_neighbor: 0,
+    }));
+
+    let sortCol = null;
+    let sortDir = 'desc';
+    let filteredIndices = null;
+    let selectedRow = null;
+
+    // ── Hash function (matches Python spatial_hash_grid.py) ─────────────────
+    function hashCell(x, y, z) {
+      return ((x & 15) + (y & 15) * 16 + (z & 15) * 256) % CELL_COUNT;
+    }
+
+    // ── Operations ──────────────────────────────────────────────────────────
+    function insertParticles() {
+      const count = parseInt(prompt('Number of particles:', '10000')) || 10000;
+      clearGrid();
+      for (let i = 0; i < count; i++) {
+        const x = Math.floor(Math.random() * GRID_SIZE);
+        const y = Math.floor(Math.random() * GRID_SIZE);
+        const z = Math.floor(Math.random() * GRID_SIZE);
+        const idx = hashCell(x, y, z);
+        grid[idx].particle_count++;
+        grid[idx].density = Math.min(255, grid[idx].particle_count);
+      }
+      // Assign voltage modes based on density
+      grid.forEach(cell => {
+        if (cell.density < 10) cell.voltage_mode = 0; // STORE
+        else if (cell.density < 50) cell.voltage_mode = 1; // COMPUTE
+        else if (cell.density < 200) cell.voltage_mode = 2; // APPROX
+        else cell.voltage_mode = 3; // MORPHIC
+      });
+      // Compute FD (simplified: density-based)
+      grid.forEach(cell => {
+        cell.fd = 2.0 + (cell.density / 255.0);
+      });
+      neighborScan();
+      render();
+    }
+
+    function clearGrid() {
+      grid.forEach(cell => {
+        cell.density = 0;
+        cell.fd = 2.0;
+        cell.voltage_mode = 0;
+        cell.particle_count = 0;
+        cell.max_neighbor = 0;
+      });
+      filteredIndices = null;
+      render();
+    }
+
+    function filterGrid() {
+      const threshold = parseInt(document.getElementById('min-density').value) || 50;
+      filteredIndices = new Set();
+      grid.forEach((cell, i) => {
+        if (cell.density > threshold) filteredIndices.add(i);
+      });
+      render();
+    }
+
+    function filterByMode() {
+      const mode = document.getElementById('mode-filter').value;
+      if (mode === 'all') {
+        filteredIndices = null;
+      } else {
+        const modeIdx = MODES.indexOf(mode);
+        filteredIndices = new Set();
+        grid.forEach((cell, i) => {
+          if (cell.voltage_mode === modeIdx) filteredIndices.add(i);
+        });
+      }
+      render();
+    }
+
+    function filterByDensity() {
+      filterGrid();
+    }
+
+    function neighborScan() {
+      // 3×3×3 neighbor scan
+      grid.forEach(cell => {
+        let maxD = 0;
+        for (let dz = -1; dz <= 1; dz++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const nx = (cell.x + dx + GRID_SIZE) % GRID_SIZE;
+              const ny = (cell.y + dy + GRID_SIZE) % GRID_SIZE;
+              const nz = (cell.z + dz + GRID_SIZE) % GRID_SIZE;
+              const ni = hashCell(nx, ny, nz);
+              maxD = Math.max(maxD, grid[ni].density);
+            }
+          }
+        }
+        cell.max_neighbor = maxD;
+      });
+      render();
+    }
+
+    function sortGrid() {
+      if (!sortCol) {
+        sortCol = 'density';
+        sortDir = 'desc';
+      } else if (sortDir === 'desc') {
+        sortDir = 'asc';
+      } else {
+        sortCol = null;
+        sortDir = 'desc';
+      }
+      render();
+    }
+
+    function sortBy(col) {
+      if (sortCol === col) {
+        sortDir = sortDir === 'desc' ? 'asc' : 'desc';
+      } else {
+        sortCol = col;
+        sortDir = 'desc';
+      }
+      render();
+    }
+
+    function selectRow(idx) {
+      selectedRow = selectedRow === idx ? null : idx;
+      render();
+      renderDetail();
+    }
+
+    // ── Render ──────────────────────────────────────────────────────────────
+    function render() {
+      let displayGrid = [...grid];
+
+      // Apply filter
+      if (filteredIndices) {
+        displayGrid = displayGrid.filter((_, i) => filteredIndices.has(i));
+      }
+
+      // Apply sort
+      if (sortCol) {
+        displayGrid.sort((a, b) => {
+          const va = a[sortCol];
+          const vb = b[sortCol];
+          return sortDir === 'desc' ? vb - va : va - vb;
+        });
+      }
+
+      // Update stats
+      const occupied = grid.filter(c => c.density > 0).length;
+      const totalParticles = grid.reduce((s, c) => s + c.particle_count, 0);
+      const maxDensity = Math.max(...grid.map(c => c.density));
+      document.getElementById('stat-total').textContent = CELL_COUNT;
+      document.getElementById('stat-occupied').textContent = occupied;
+      document.getElementById('stat-particles').textContent = totalParticles;
+      document.getElementById('stat-filtered').textContent = filteredIndices ? filteredIndices.size : CELL_COUNT;
+      document.getElementById('stat-max-density').textContent = maxDensity;
+
+      // Update sort indicators
+      document.querySelectorAll('th').forEach(th => {
+        th.classList.remove('sorted-asc', 'sorted-desc');
+        if (th.dataset.col === sortCol) {
+          th.classList.add(sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+        }
+      });
+
+      // Render rows (virtualized: only render visible + overscan)
+      const container = document.getElementById('grid-container');
+      const scrollTop = container.scrollTop;
+      const rowHeight = 28;
+      const overscan = 20;
+      const startIdx = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+      const endIdx = Math.min(displayGrid.length, startIdx + Math.ceil(container.clientHeight / rowHeight) + overscan * 2);
+
+      const tbody = document.getElementById('grid-body');
+      tbody.innerHTML = '';
+
+      // Spacer for virtualization
+      if (startIdx > 0) {
+        const spacer = document.createElement('tr');
+        spacer.style.height = (startIdx * rowHeight) + 'px';
+        tbody.appendChild(spacer);
+      }
+
+      for (let i = startIdx; i < endIdx; i++) {
+        const cell = displayGrid[i];
+        const tr = document.createElement('tr');
+        tr.className = selectedRow === cell.index ? 'selected' : '';
+        tr.onclick = () => selectRow(cell.index);
+
+        const modeName = MODES[cell.voltage_mode] || 'STORE';
+        const densityWidth = Math.round((cell.density / 255) * 100);
+        const fdWidth = Math.round(((cell.fd - 2.0) / 1.0) * 100);
+
+        tr.innerHTML = `
+          <td style="color:#555">${cell.index}</td>
+          <td>${cell.x}</td>
+          <td>${cell.y}</td>
+          <td>${cell.z}</td>
+          <td><span class="density-bar" style="width:${densityWidth}px"></span> ${cell.density}</td>
+          <td><span class="fd-bar" style="width:${fdWidth}px"></span> ${cell.fd.toFixed(2)}</td>
+          <td class="mode-${modeName}">${modeName}</td>
+          <td>${cell.particle_count}</td>
+          <td>${cell.max_neighbor}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+
+      // Spacer for virtualization
+      if (endIdx < displayGrid.length) {
+        const spacer = document.createElement('tr');
+        spacer.style.height = ((displayGrid.length - endIdx) * rowHeight) + 'px';
+        tbody.appendChild(spacer);
+      }
+    }
+
+    function renderDetail() {
+      const panel = document.getElementById('detail-panel');
+      if (selectedRow === null) {
+        panel.classList.remove('visible');
+        return;
+      }
+      panel.classList.add('visible');
+      const cell = grid[selectedRow];
+      const modeName = MODES[cell.voltage_mode] || 'STORE';
+      document.getElementById('detail-content').innerHTML = `
+        <div class="field"><label>Index</label><value>${cell.index}</value></div>
+        <div class="field"><label>Position</label><value>(${cell.x}, ${cell.y}, ${cell.z})</value></div>
+        <div class="field"><label>Density</label><value>${cell.density}</value></div>
+        <div class="field"><label>Fractal Dimension</label><value>${cell.fd.toFixed(4)}</value></div>
+        <div class="field"><label>Voltage Mode</label><value class="mode-${modeName}">${modeName}</value></div>
+        <div class="field"><label>Particle Count</label><value>${cell.particle_count}</value></div>
+        <div class="field"><label>Max Neighbor Density</label><value>${cell.max_neighbor}</value></div>
+        <div class="field"><label>Hash</label><value>${hashCell(cell.x, cell.y, cell.z)}</value></div>
+        <div class="field"><label>Q16_16 FD</label><value>${Math.round(cell.fd * 65536)}</value></div>
+      `;
+    }
+
+    // ── Keyboard shortcuts ──────────────────────────────────────────────────
+    document.addEventListener('keydown', e => {
+      if (e.target.tagName === 'INPUT') return;
+      switch(e.key) {
+        case '1': insertParticles(); break;
+        case '2': clearGrid(); break;
+        case '3': filterGrid(); break;
+        case '4': neighborScan(); break;
+        case '5': sortGrid(); break;
+        case '6': filterByMode(); break;
+      }
+    });
+
+    // ── Virtual scroll ──────────────────────────────────────────────────────
+    document.getElementById('grid-container').addEventListener('scroll', () => {
+      requestAnimationFrame(render);
+    });
+
+    // ── Init ────────────────────────────────────────────────────────────────
+    render();
+  </script>
+</body>
+</html>

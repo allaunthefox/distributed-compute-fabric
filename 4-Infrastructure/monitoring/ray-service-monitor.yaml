@@ -1,0 +1,39 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ray-cluster
+  namespace: monitoring
+  labels:
+    release: prometheus-operator
+spec:
+  selector:
+    matchLabels:
+      app: ray-head
+  endpoints:
+  - port: dashboard
+    interval: 15s
+    path: /metrics
+    scheme: http
+  namespaceSelector:
+    matchNames:
+    - ray-system
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: hermes-api
+  namespace: monitoring
+  labels:
+    release: prometheus-operator
+spec:
+  selector:
+    matchLabels:
+      app: hermes
+  endpoints:
+  - port: http
+    interval: 15s
+    path: /api/v1/metrics
+    scheme: http
+  namespaceSelector:
+    matchNames:
+    - hermes

@@ -1,0 +1,40 @@
+global:
+  nodeSelector:
+    kubernetes.io/hostname: qfox-1
+
+authentik:
+  log_level: info
+  secret_key: ""  # Will be auto-generated
+  bootstrap_password: "authentik"
+  bootstrap_token: "authentik-bootstrap-token"
+  email:
+    host: ""
+    port: 587
+    username: ""
+    password: ""
+
+postgresql:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 10Gi
+  primary:
+    nodeSelector:
+      kubernetes.io/hostname: qfox-1
+
+redis:
+  enabled: true
+  master:
+    nodeSelector:
+      kubernetes.io/hostname: qfox-1
+
+server:
+  service:
+    type: NodePort
+    nodePort: 30095
+  ingress:
+    enabled: false
+
+worker:
+  nodeSelector:
+    kubernetes.io/hostname: qfox-1

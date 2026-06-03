@@ -1,0 +1,156 @@
+# GGUF + Ray + VCN-LUPINE - Multi-Architecture Docker Image
+# Version: 1.0.0
+# Date: 2026-06-01
+# Author: Mistral Vibe
+
+# =============================================================================
+# DOCKER BUILD INSTRUCTIONS
+# =============================================================================
+#
+# Build multi-arch image:
+#   docker buildx create --use
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -t ghcr.io/youruser/gguf-ray:latest \
+#     -t ghcr.io/youruser/gguf-ray:v1.0.0 \
+#     --push \
+#     -f Dockerfile.gguf \
+#     .
+#
+# Build for specific architecture:
+#   docker build --platform linux/amd64 -t ghcr.io/youruser/gguf-ray:amd64 .
+#   docker build --platform linux/arm64 -t ghcr.io/youruser/gguf-ray:arm64 .
+#
+# =============================================================================
+
+# =============================================================================
+# STAGE 1: BUILDER - Compile llama.cpp
+# =============================================================================
+# Uses a separate builder stage to compile llama.cpp
+# This keeps the final image small
+
+FROM --platform=$BUILDPLATFORM python:3.11-slim as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone and build llama.cpp
+WORKDIR /llama.cpp
+
+# Clone with submodules (KISS FFT, BLAS, etc.)
+RUN git clone --recursive https://github.com/ggerganov/llama.cpp . && \
+    git checkout master && \
+    git pull && \
+    git submodule update --init --recursive
+
+# Build llama.cpp with optimizations
+# -DLLAMA_CUBLAS=ON for CUDA support
+# -DLLAMA_VULKAN=ON for Vulkan support
+# -DLLAMA_METAL=OFF (not needed for Linux)
+RUN mkdir -p build && cd build && \
+    cmake .. \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DLLAMA_CUBLAS=ON \
+      -DLLAMA_VULKAN=ON \
+      -DLLAMA_BLAS=ON \
+      -DLLAMA_BLAS_VENDOR=OpenBLAS \
+      -DBUILD_SHARED_LIBS=ON \
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+      -DLLAMA_FATAL_WARN=OFF \
+      -DLLAMA_DATE_OTHER=ON \
+      -DLLAMA_MMAP=ON \
+      -DLLAMA_NUMA=ON \
+      -DLLAMANative=OFF \
+    && make -j$(nproc) && \
+    cd .. && rm -rf build
+
+# =============================================================================
+# STAGE 2: RUNTIME - Production Image
+# =============================================================================
+
+FROM --platform=$TARGETPLATFORM python:3.11-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # BLAS for CPU inference
+    libopenblas-dev \
+    # VAAPI for hardware video acceleration (steamdeck)
+    libva-dev \
+    libva-drm2 \
+    libva-x11-2 \
+    # Vulkan for GPU acceleration
+    libvulkan-dev \
+    vulkan-tools \
+    # FFmpeg for video processing
+    ffmpeg \
+    # GLIBC dependencies
+    libgl1 \
+    libglx0 \
+    # CUDA libraries (for qfox-1)
+    libnvidia-ml-dev \
+    # ARM64 specific libraries
+    && if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+        apt-get install -y libopenblas-arm64; \
+    fi \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy compiled llama.cpp from builder
+COPY --from=builder /llama.cpp/llama-server /usr/local/bin/llama-server
+COPY --from=builder /llama.cpp/llama /usr/local/bin/llama
+COPY --from=builder /llama.cpp/libllama.so /usr/local/lib/libllama.so
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install llm Python bindings (pre-built wheels available)
+RUN pip install --no-cache-dir llama-cpp-python
+
+# Create application directory
+WORKDIR /app
+
+# Copy application code
+COPY gguf_actors.py /app/gguf_actors.py
+COPY coder_actor.py /app/coder_actor.py
+COPY vision_actor.py /app/vision_actor.py
+COPY general_actor.py /app/general_actor.py
+COPY frame_dispatcher.py /app/frame_dispatcher.py
+
+# Create hermes directory
+RUN mkdir -p /app/hermes
+COPY hermes/orchestrator.py /app/hermes/orchestrator.py
+COPY hermes/__init__.py /app/hermes/__init__.py 2>/dev/null || true
+
+# Install VCN-LUPINE shim
+COPY vcn-lupine.so /usr/local/lib/vcn-lupine.so
+
+# Configure environment
+ENV LD_PRELOAD=/usr/local/lib/vcn-lupine.so
+ENV PYTHONPATH=/app
+ENV RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=true
+ENV RAY_memory_monitor_refresh_ms=1000
+
+# Create model cache directory
+RUN mkdir -p /tmp/gguf-models && chmod 777 /tmp/gguf-models
+
+# Create Ray logs directory
+RUN mkdir -p /tmp/ray && chmod 777 /tmp/ray
+
+# Set timezone
+ENV TZ=UTC
+
+# Multi-arch support for OpenBLAS
+ARG TARGETPLATFORM
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+    apt-get install -y --no-install-recommends libopenblas-arm64 && \
+    update-alternatives --set libblas.so.3-x86_64-linux-gnu libopenblas.so.0; \
+    fi
+
+# Default command: Start Ray head
+CMD ["python", "-c", "import ray; ray.init(address='auto', ignore_reinit_error=True, log_to_driver=False); print('Ray initialized'); import time; time.sleep(3600)"]
+
+# Alternative: Start as worker
+# CMD ["python", "-c", "import ray; ray.init(address='auto', ignore_reinit_error=True); print('Ray worker initialized'); import time; time.sleep(3600)"]

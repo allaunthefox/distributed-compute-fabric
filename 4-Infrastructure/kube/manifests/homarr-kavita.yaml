@@ -1,0 +1,135 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: homarr-config
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homarr
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: homarr
+  template:
+    metadata:
+      labels:
+        app: homarr
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: homarr
+          image: ghcr.io/ajnart/homarr:latest
+          ports:
+            - containerPort: 7575
+          env:
+            - name: AUTH_OIDC_CLIENT_ID
+              value: "sso-homarr"
+            - name: AUTH_OIDC_CLIENT_SECRET
+              value: "2e1170ceb4589ca7f67e78b8460ed573c55e26d8cba5a1921b861fff905557da"
+            - name: AUTH_OIDC_URI
+              value: "https://auth.researchstack.info/application/o/homarr/"
+          volumeMounts:
+            - name: config
+              mountPath: /app/data
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: homarr-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: homarr
+  namespace: media
+spec:
+  type: NodePort
+  ports:
+    - port: 7575
+      targetPort: 7575
+      nodePort: 30093
+  selector:
+    app: homarr
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kavita-config
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kavita
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kavita
+  template:
+    metadata:
+      labels:
+        app: kavita
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: kavita
+          image: jvmilazz0/kavita:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "100"
+          volumeMounts:
+            - name: config
+              mountPath: /kavita/config
+            - name: media
+              mountPath: /kavita/books
+              subPath: books
+            - name: media
+              mountPath: /kavita/comics
+              subPath: comics
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: kavita-config
+        - name: media
+          persistentVolumeClaim:
+            claimName: media-store
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kavita
+  namespace: media
+spec:
+  type: NodePort
+  ports:
+    - port: 5000
+      targetPort: 5000
+      nodePort: 30094
+  selector:
+    app: kavita

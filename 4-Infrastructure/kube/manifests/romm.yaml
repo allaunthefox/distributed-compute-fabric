@@ -1,0 +1,214 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: romm-mysql
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: local-path
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: romm-resources
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: local-path
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: romm-redis
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: romm-db
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: romm-db
+  template:
+    metadata:
+      labels:
+        app: romm-db
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: mariadb
+          image: mariadb:latest
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              value: "romm-root-pw"
+            - name: MARIADB_DATABASE
+              value: "romm"
+            - name: MARIADB_USER
+              value: "romm"
+            - name: MARIADB_PASSWORD
+              value: "romm-db-pw"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+          livenessProbe:
+            exec:
+              command: [healthcheck.sh, --connect, --innodb_initialized]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: romm-mysql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: romm-db
+  namespace: media
+spec:
+  ports:
+    - port: 3306
+      targetPort: 3306
+  selector:
+    app: romm-db
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: romm-redis
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: romm-redis
+  template:
+    metadata:
+      labels:
+        app: romm-redis
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: romm-redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: romm-redis
+  namespace: media
+spec:
+  ports:
+    - port: 6379
+      targetPort: 6379
+  selector:
+    app: romm-redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: romm
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: romm
+  template:
+    metadata:
+      labels:
+        app: romm
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: romm
+          image: rommapp/romm:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DB_HOST
+              value: "romm-db"
+            - name: DB_NAME
+              value: "romm"
+            - name: DB_USER
+              value: "romm"
+            - name: DB_PASSWD
+              value: "romm-db-pw"
+            - name: ROMM_AUTH_SECRET_KEY
+              value: "change-me-romm-secret-key-32bytes-hex00000"
+            - name: REDIS_HOST
+              value: "romm-redis"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: ROMM_PORT
+              value: "8080"
+            - name: HASHEOUS_API_ENABLED
+              value: "true"
+          volumeMounts:
+            - name: library
+              mountPath: /romm/library
+              subPath: games
+            - name: assets
+              mountPath: /romm/assets
+            - name: config
+              mountPath: /romm/config
+            - name: resources
+              mountPath: /romm/resources
+      volumes:
+        - name: library
+          persistentVolumeClaim:
+            claimName: media-store
+        - name: assets
+          emptyDir: {}
+        - name: config
+          emptyDir: {}
+        - name: resources
+          persistentVolumeClaim:
+            claimName: romm-resources
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: romm
+  namespace: media
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30099
+  selector:
+    app: romm

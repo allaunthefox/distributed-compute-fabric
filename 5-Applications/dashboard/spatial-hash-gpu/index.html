@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Spatial Hash Grid — WebGPU Prototype</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #e0e0e0; font-family: 'Courier New', monospace; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hud {
+    position: fixed; top: 16px; left: 16px;
+    background: rgba(0,0,0,0.85); border: 1px solid #333;
+    padding: 16px 20px; border-radius: 8px;
+    font-size: 13px; line-height: 1.8;
+    pointer-events: none; z-index: 10;
+    min-width: 320px;
+  }
+  #hud h2 { font-size: 15px; color: #8cf; margin-bottom: 8px; letter-spacing: 1px; }
+  #hud .row { display: flex; justify-content: space-between; }
+  #hud .label { color: #888; }
+  #hud .value { color: #fff; font-weight: bold; }
+  #hud .sep { border-top: 1px solid #222; margin: 6px 0; }
+  #controls {
+    position: fixed; bottom: 16px; left: 16px;
+    background: rgba(0,0,0,0.85); border: 1px solid #333;
+    padding: 12px 16px; border-radius: 8px;
+    font-size: 12px; line-height: 2;
+    pointer-events: none; z-index: 10;
+  }
+  #controls kbd {
+    background: #222; border: 1px solid #555; border-radius: 3px;
+    padding: 1px 6px; font-family: inherit; color: #8cf;
+  }
+  #error {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: #200; border: 1px solid #f44; padding: 32px; border-radius: 12px;
+    font-size: 16px; display: none; z-index: 100; text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="error"></div>
+<div id="hud">
+  <h2>SPATIAL HASH GRID 16³</h2>
+  <div class="row"><span class="label">FPS</span><span class="value" id="fps">—</span></div>
+  <div class="row"><span class="label">Total Cells</span><span class="value" id="cellCount">—</span></div>
+  <div class="row"><span class="label">Occupied Cells</span><span class="value" id="occupiedCells">—</span></div>
+  <div class="row"><span class="label">Total Particles</span><span class="value" id="totalParticles">—</span></div>
+  <div class="sep"></div>
+  <div class="row"><span class="label">Filter Matches</span><span class="value" id="filterMatches">—</span></div>
+  <div class="row"><span class="label">Max Density</span><span class="value" id="maxDensity">—</span></div>
+  <div class="sep"></div>
+  <div class="row"><span class="label">STORE (red)</span><span class="value" id="modeStore">—</span></div>
+  <div class="row"><span class="label">COMPUTE (green)</span><span class="value" id="modeCompute">—</span></div>
+  <div class="row"><span class="label">APPROX (blue)</span><span class="value" id="modeApprox">—</span></div>
+  <div class="row"><span class="label">MORPHIC (white)</span><span class="value" id="modeMorphic">—</span></div>
+  <div class="sep"></div>
+  <div class="row"><span class="label">Action</span><span class="value" id="action">Ready</span></div>
+</div>
+<div id="controls">
+  <kbd>1</kbd> Insert 10k particles &nbsp;
+  <kbd>2</kbd> Clear grid &nbsp;
+  <kbd>3</kbd> Filter (density &gt; 50) &nbsp;
+  <kbd>4</kbd> Neighbor scan &nbsp;
+  <kbd>5</kbd> Sort by density &nbsp;
+  <kbd>6</kbd> Set voltage modes &nbsp;
+  <kbd>Mouse</kbd> Orbit camera &nbsp;
+  <kbd>Scroll</kbd> Zoom
+</div>
+<canvas id="canvas"></canvas>
+
+<script type="module">
+// ============================================================
+// index.html — Self-contained WebGPU spatial hash visualization
+// ============================================================
+
+import { GridStorage } from './grid-storage.js';
+
+const GRID_DIM = 16;
+const GRID_SIZE = GRID_DIM * GRID_DIM * GRID_DIM;
+
+// ── HUD helpers ────────────────────────────────────────────
+
+function setAction(msg) {
+  document.getElementById('action').textContent = msg;
+}
+
+function updateHUD(stats) {
+  document.getElementById('cellCount').textContent = stats.cellCount ?? '—';
+  document.getElementById('occupiedCells').textContent = stats.occupiedCells ?? '—';
+  document.getElementById('totalParticles').textContent = stats.totalParticles ?? '—';
+  document.getElementById('filterMatches').textContent = stats.filterMatches ?? '—';
+  document.getElementById('maxDensity').textContent = stats.maxDensity ?? '—';
+  if (stats.modeCounts) {
+    document.getElementById('modeStore').textContent = stats.modeCounts[0] ?? '—';
+    document.getElementById('modeCompute').textContent = stats.modeCounts[1] ?? '—';
+    document.getElementById('modeApprox').textContent = stats.modeCounts[2] ?? '—';
+    document.getElementById('modeMorphic').textContent = stats.modeCounts[3] ?? '—';
+  }
+}
+
+// ── Camera ─────────────────────────────────────────────────
+
+let cameraTheta = 0.6;
+let cameraPhi = 0.4;
+let cameraDist = 35;
+let isDragging = false;
+let lastMouse = [0, 0];
+
+const canvas = document.getElementById('canvas');
+canvas.addEventListener('mousedown', e => { isDragging = true; lastMouse = [e.clientX, e.clientY]; });
+canvas.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  cameraTheta -= (e.clientX - lastMouse[0]) * 0.005;
+  cameraPhi = Math.max(-1.5, Math.min(1.5, cameraPhi + (e.clientY - lastMouse[1]) * 0.005));
+  lastMouse = [e.clientX, e.clientY];
+});
+canvas.addEventListener('mouseup', () => { isDragging = false; });
+canvas.addEventListener('wheel', e => {
+  cameraDist = Math.max(10, Math.min(100, cameraDist + e.deltaY * 0.05));
+  e.preventDefault();
+}, { passive: false });
+
+// Touch support
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 1) { isDragging = true; lastMouse = [e.touches[0].clientX, e.touches[0].clientY]; }
+}, { passive: true });
+canvas.addEventListener('touchmove', e => {
+  if (!isDragging || e.touches.length !== 1) return;
+  cameraTheta -= (e.touches[0].clientX - lastMouse[0]) * 0.005;
+  cameraPhi = Math.max(-1.5, Math.min(1.5, cameraPhi + (e.touches[0].clientY - lastMouse[1]) * 0.005));
+  lastMouse = [e.touches[0].clientX, e.touches[0].clientY];
+}, { passive: true });
+canvas.addEventListener('touchend', () => { isDragging = false; });
+
+function getCameraPos() {
+  return [
+    cameraDist * Math.cos(cameraPhi) * Math.sin(cameraTheta),
+    cameraDist * Math.sin(cameraPhi),
+    cameraDist * Math.cos(cameraPhi) * Math.cos(cameraTheta),
+  ];
+}
+
+// ── Matrix math ────────────────────────────────────────────
+
+function mat4Perspective(fov, aspect, near, far) {
+  const f = 1 / Math.tan(fov / 2);
+  const nf = 1 / (near - far);
+  return new Float32Array([
+    f / aspect, 0, 0, 0,
+    0, f, 0, 0,
+    0, 0, (far + near) * nf, -1,
+    0, 0, 2 * far * near * nf, 0,
+  ]);
+}
+
+function mat4LookAt(eye, center, up) {
+  const zx = eye[0]-center[0], zy = eye[1]-center[1], zz = eye[2]-center[2];
+  let len = Math.sqrt(zx*zx+zy*zy+zz*zz);
+  const z0=zx/len, z1=zy/len, z2=zz/len;
+  const xx = up[1]*z2 - up[2]*z1, xy = up[2]*z0 - up[0]*z2, xz = up[0]*z1 - up[1]*z0;
+  len = Math.sqrt(xx*xx+xy*xy+xz*xz);
+  const x0=xx/len, x1=xy/len, x2=xz/len;
+  const y0 = z1*x2 - z2*x1, y1 = z2*x0 - z0*x2, y2 = z0*x1 - z1*x0;
+  return new Float32Array([
+    x0, y0, z0, 0,
+    x1, y1, z1, 0,
+    x2, y2, z2, 0,
+    -(x0*eye[0]+x1*eye[1]+x2*eye[2]),
+    -(y0*eye[0]+y1*eye[1]+y2*eye[2]),
+    -(z0*eye[0]+z1*eye[1]+z2*eye[2]),
+    1,
+  ]);
+}
+
+function mat4Multiply(a, b) {
+  const o = new Float32Array(16);
+  for (let i = 0; i < 4; i++)
+    for (let j = 0; j < 4; j++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[i+k*4] * b[k+j*4];
+      o[i+j*4] = s;
+    }
+  return o;
+}
+
+// ── WebGPU init ────────────────────────────────────────────
+
+async function main() {
+  if (!navigator.gpu) {
+    document.getElementById('error').style.display = 'block';
+    document.getElementById('error').textContent = 'WebGPU not supported. Use Chrome/Edge 113+.';
+    return;
+  }
+
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  if (!adapter) { document.getElementById('error').style.display = 'block'; document.getElementById('error').textContent = 'No WebGPU adapter.'; return; }
+
+  const device = await adapter.requestDevice();
+  const context = canvas.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+
+  canvas.width = window.innerWidth * devicePixelRatio;
+  canvas.height = window.innerHeight * devicePixelRatio;
+  context.configure({ device, format, alphaMode: 'premultiplied' });
+
+  window.addEventListener('resize', () => {
+    canvas.width = window.innerWidth * devicePixelRatio;
+    canvas.height = window.innerHeight * devicePixelRatio;
+  });
+
+  // ── Init grid storage ──────────────────────────────────
+
+  const grid = new GridStorage();
+  await grid.init(device);
+
+  // Clear grid on startup
+  grid.clear();
+  setAction('Grid cleared');
+
+  // ── Render pipeline ────────────────────────────────────
+
+  const shaderCode = await fetch('./shaders.wgsl').then(r => r.text());
+  const shaderModule = device.createShaderModule({ code: shaderCode });
+
+  // Render bind group layout (group 0 for render)
+  const renderBGL = device.createBindGroupLayout({
+    entries: [
+      { binding: 10, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+    ],
+  });
+
+  // Grid data bind group layout (group 1 — grid buffer for reading in vertex shader)
+  // We need the grid buffer accessible in vertex shader for instance data
+  // Instead of binding the grid buffer, we'll generate instance data on CPU from readback
+
+  // Quad vertices (2 triangles)
+  const quadVerts = new Float32Array([
+    -0.5, -0.5,   0.5, -0.5,   0.5, 0.5,
+    -0.5, -0.5,   0.5,  0.5,  -0.5, 0.5,
+  ]);
+
+  const quadBuffer = device.createBuffer({
+    size: quadVerts.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(quadBuffer, 0, quadVerts);
+
+  // Instance buffers (position, mode, density) — populated from grid readback
+  const maxInstances = GRID_SIZE;
+  const instancePosBuf = device.createBuffer({
+    size: maxInstances * 12, // vec3<f32>
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  const instanceModeBuf = device.createBuffer({
+    size: maxInstances * 4, // u32
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  const instanceDensityBuf = device.createBuffer({
+    size: maxInstances * 4, // f32
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+
+  // Uniform buffer for MVP + camera
+  const uniformBuffer = device.createBuffer({
+    size: 96, // mat4(64) + vec3(12) + f32(4) + padding
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  const renderBG = device.createBindGroup({
+    layout: renderBGL,
+    entries: [
+      { binding: 10, resource: { buffer: uniformBuffer } },
+    ],
+  });
+
+  const renderPipeline = device.createRenderPipeline({
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [renderBGL],
+    }),
+    vertex: {
+      module: shaderModule,
+      entryPoint: 'vertexMain',
+      buffers: [
+        // Quad vertices
+        {
+          arrayStride: 8,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x2' },
+          ],
+        },
+        // Instance position (vec3<f32>)
+        {
+          arrayStride: 12,
+          stepMode: 'instance',
+          attributes: [
+            { shaderLocation: 1, offset: 0, format: 'float32x3' },
+          ],
+        },
+        // Instance mode (u32 as uint32)
+        {
+          arrayStride: 4,
+          stepMode: 'instance',
+          attributes: [
+            { shaderLocation: 2, offset: 0, format: 'uint32' },
+          ],
+        },
+        // Instance density (f32)
+        {
+          arrayStride: 4,
+          stepMode: 'instance',
+          attributes: [
+            { shaderLocation: 3, offset: 0, format: 'float32' },
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: 'fragmentMain',
+      targets: [{
+        format,
+        blend: {
+          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        },
+      }],
+    },
+    primitive: {
+      topology: 'triangle-list',
+    },
+  });
+
+  // ── Keyboard controls ──────────────────────────────────
+
+  let lastAction = 0;
+  function throttle(msg, fn) {
+    const now = performance.now();
+    if (now - lastAction < 100) return;
+    lastAction = now;
+    setAction(msg);
+    fn();
+  }
+
+  document.addEventListener('keydown', e => {
+    const key = e.key;
+    if (key === '1') {
+      throttle('Inserting 10k particles...', () => {
+        const particles = [];
+        for (let i = 0; i < 10000; i++) {
+          particles.push({
+            x: Math.floor(Math.random() * GRID_DIM),
+            y: Math.floor(Math.random() * GRID_DIM),
+            z: Math.floor(Math.random() * GRID_DIM),
+          });
+        }
+        grid.insert(particles);
+        // Assign voltage modes based on density
+        grid.setVoltageMode();
+        setTimeout(() => refreshStats(), 50);
+      });
+    } else if (key === '2') {
+      throttle('Clearing grid...', () => {
+        grid.clear();
+        setTimeout(() => refreshStats(), 50);
+      });
+    } else if (key === '3') {
+      throttle('Filtering density > 50...', () => {
+        grid.filter({ density_gt: 50 });
+        setTimeout(() => refreshStats(), 50);
+      });
+    } else if (key === '4') {
+      throttle('Neighbor scan (3×3×3)...', () => {
+        grid.neighbor();
+        setTimeout(() => refreshStats(), 50);
+      });
+    } else if (key === '5') {
+      throttle('Sorting by density...', () => {
+        grid.sort('density');
+        setTimeout(() => refreshStats(), 50);
+      });
+    } else if (key === '6') {
+      throttle('Setting voltage modes...', () => {
+        grid.setVoltageMode();
+        setTimeout(() => refreshStats(), 50);
+      });
+    }
+  });
+
+  async function refreshStats() {
+    const stats = await grid.readStats();
+    updateHUD(stats);
+  }
+
+  // ── Frame loop ─────────────────────────────────────────
+
+  let frameCount = 0;
+  let lastFpsTime = performance.now();
+  let fps = 0;
+
+  // Cache for instance data
+  let instanceCount = 0;
+  let lastReadback = 0;
+
+  function frame() {
+    const now = performance.now();
+
+    // FPS
+    frameCount++;
+    if (now - lastFpsTime >= 1000) {
+      fps = frameCount;
+      frameCount = 0;
+      lastFpsTime = now;
+      document.getElementById('fps').textContent = fps;
+    }
+
+    // Periodic readback for instance data (every 500ms)
+    if (now - lastReadback > 500) {
+      lastReadback = now;
+      readbackAndUpload();
+    }
+
+    // Camera
+    const aspect = canvas.width / canvas.height;
+    const proj = mat4Perspective(Math.PI / 3, aspect, 0.1, 200);
+    const camPos = getCameraPos();
+    const center = [GRID_DIM/2, GRID_DIM/2, GRID_DIM/2];
+    const view = mat4LookAt(camPos, center, [0, 1, 0]);
+    const mvp = mat4Multiply(proj, view);
+
+    // Upload uniforms
+    const uniforms = new Float32Array(24);
+    uniforms.set(mvp, 0);
+    uniforms[16] = camPos[0];
+    uniforms[17] = camPos[1];
+    uniforms[18] = camPos[2];
+    uniforms[19] = now * 0.001;
+    device.queue.writeBuffer(uniformBuffer, 0, uniforms);
+
+    // Render
+    const texture = context.getCurrentTexture();
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: texture.createView(),
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: { r: 0.04, g: 0.04, b: 0.06, a: 1 },
+      }],
+    });
+
+    if (instanceCount > 0) {
+      pass.setPipeline(renderPipeline);
+      pass.setBindGroup(0, renderBG);
+      pass.setVertexBuffer(0, quadBuffer);
+      pass.setVertexBuffer(1, instancePosBuf);
+      pass.setVertexBuffer(2, instanceModeBuf);
+      pass.setVertexBuffer(3, instanceDensityBuf);
+      pass.draw(6, instanceCount); // 6 vertices per quad, N instances
+    }
+
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+
+    requestAnimationFrame(frame);
+  }
+
+  async function readbackAndUpload() {
+    if (!grid.initialized) return;
+    const gridData = await grid.readGrid();
+    const stats = grid.stats;
+
+    // Build instance data from occupied cells
+    const positions = new Float32Array(GRID_SIZE * 3);
+    const modes = new Uint32Array(GRID_SIZE);
+    const densities = new Float32Array(GRID_SIZE);
+    let count = 0;
+
+    for (let i = 0; i < GRID_SIZE; i++) {
+      const off = i * 8;
+      const x = gridData[off];
+      const y = gridData[off + 1];
+      const z = gridData[off + 2];
+      const density = gridData[off + 3];
+      const mode = gridData[off + 5];
+
+      if (density > 0) {
+        positions[count * 3] = x;
+        positions[count * 3 + 1] = y;
+        positions[count * 3 + 2] = z;
+        modes[count] = mode;
+        densities[count] = density;
+        count++;
+      }
+    }
+
+    instanceCount = count;
+
+    if (count > 0) {
+      device.queue.writeBuffer(instancePosBuf, 0, positions.subarray(0, count * 3));
+      device.queue.writeBuffer(instanceModeBuf, 0, modes.subarray(0, count));
+      device.queue.writeBuffer(instanceDensityBuf, 0, densities.subarray(0, count));
+    }
+
+    updateHUD(stats);
+  }
+
+  // Start
+  requestAnimationFrame(frame);
+}
+
+main().catch(err => {
+  document.getElementById('error').style.display = 'block';
+  document.getElementById('error').textContent = 'Error: ' + err.message;
+  console.error(err);
+});
+</script>
+</body>
+</html>

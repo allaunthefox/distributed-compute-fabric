@@ -1,0 +1,41 @@
+# Kustomization for Qwopus3.5-9B-Coder-MTP Model
+# Applies deployment + service for code generation specialist
+#
+# Usage:
+#   kubectl apply -k manifests/qwopus/
+#
+# PREREQUISITES:
+#   Model file at /home/allaun/Downloads/Qwopus3.5-9B-Coder-MTP-Q4_K_M.gguf on neon-64gb
+#   neon-64gb node joined to cluster with labels:
+#     kubernetes.io/arch: arm64
+#     topology.researchstack.io/role: neon
+#
+# Resource usage:
+#   - Memory: ~5-6GB
+#   - CPU: 1-2 cores
+#   - Storage: ~4.5GB
+#
+# Specialization:
+#   - Code GENERATION (writing new code)
+#   - Code COMPLETION (autocomplete)
+#   - Multi-turn programming (MTP = Multi-Turn Programming)
+#
+# Comparison with DeepSeek-Coder-6.7B:
+#   - Qwopus: Better at generation, 9B params, ~5-6GB RAM
+#   - DeepSeek: Better at analysis, 6.7B params, ~6-8GB RAM
+#   - Both fit on neon-64gb together: ~12-14GB
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+
+# Common labels for all resources
+commonLabels:
+  component: qwopus-model
+  tier: backend
+  role: specialist-tool
+  tool-type: coder
+  coder-type: generation

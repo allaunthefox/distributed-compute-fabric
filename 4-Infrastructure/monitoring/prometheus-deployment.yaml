@@ -1,0 +1,441 @@
+# Prometheus Deployment for GGUF Inference Monitoring
+# Version: 1.0.0
+# Date: 2026-06-01
+# Author: Mistral Vibe
+
+# =============================================================================
+# PROMETHEUS MONITORING STACK
+# =============================================================================
+#
+# Components:
+# - Prometheus Server: Metrics collection and storage
+# - ServiceMonitor: Discover Kubernetes services
+# - PodMonitor: Discover Ray worker pods
+# - PrometheusRule: Alert rules
+#
+# Architecture:
+#   Prometheus scrapes:
+#   - Hermes metrics (port 8001)
+#   - Ray actor metrics (port 8000-10000)
+#   - System metrics (node-exporter)
+#
+# =============================================================================
+
+---
+# =============================================================================
+# NAMESPACE
+# =============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    name: monitoring
+
+---
+# =============================================================================
+# SERVICE ACCOUNT
+# =============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+    component: server
+
+---
+# =============================================================================
+# CLUSTER ROLE (for ServiceMonitor/PodMonitor discovery)
+# =============================================================================
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+  labels:
+    app: prometheus
+    component: server
+
+rules:
+- apiGroups: [""]
+  resources: ["services", "endpoints", "pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["servicemonitors", "podmonitors", "prometheusrules"]
+  verbs: ["get", "list", "watch"]
+
+---
+# =============================================================================
+# CLUSTER ROLE BINDING
+# =============================================================================
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+  labels:
+    app: prometheus
+    component: server
+
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: monitoring
+
+---
+# =============================================================================
+# CONFIG MAP (Prometheus configuration)
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+  labels:
+    app: prometheus
+    component: server
+
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      scrape_timeout: 10s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: gguf-ray-vcn
+    
+    # Scrape configs
+    scrape_configs:
+    - job_name: 'kubernetes-pods'
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: pod
+    
+    # Hermes API
+    - job_name: 'hermes'
+      scrape_interval: 15s
+      static_configs:
+      - targets: ['hermes:8001']
+        labels:
+          app: hermes
+          component: orchestrator
+    
+    # Ray workers
+    - job_name: 'ray-workers'
+      scrape_interval: 15s
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_ray_io_ray_node_type]
+        action: keep
+        regex: worker
+      - source_labels: [__address__, __meta_kubernetes_pod_container_port_number]
+        action: replace
+        target_label: __address__
+        regex: ([^:]+):\d+;(\d+)
+        replacement: $1:8001
+    
+    # Ray head
+    - job_name: 'ray-head'
+      scrape_interval: 15s
+      static_configs:
+      - targets: ['raycluster-head-svc:8080']
+        labels:
+          app: ray
+          component: head
+
+---
+# =============================================================================
+# PROMETHEUS DEPLOYMENT (using kube-prometheus)
+# =============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: main
+  namespace: monitoring
+  labels:
+    app: prometheus
+    component: server
+    version: "1.0.0"
+
+spec:
+  serviceAccountName: prometheus
+  serviceMonitorSelector:
+    matchLabels:
+      app: prometheus
+      component: servicemonitor
+  podMonitorSelector:
+    matchLabels:
+      app: prometheus
+      component: podmonitor
+  prometheusRuleSelector:
+    matchLabels:
+      app: prometheus
+      component: rules
+  
+  # Resources
+  resources:
+    requests:
+      memory: "2Gi"
+      cpu: "1"
+    limits:
+      memory: "4Gi"
+      cpu: "2"
+  
+  # Retention
+  retention: 30d
+  retentionSize: "50Gi"
+  
+  # Scrape intervals
+  scrapeInterval: 15s
+  scrapeTimeout: 10s
+  evaluationInterval: 15s
+  
+  # Enable remote write (optional)
+  enableRemoteWrite: false
+  
+  # Alert manager (optional)
+  alerting:
+    alertmanagers:
+    - name: alertmanager
+      namespace: monitoring
+      port: web
+
+---
+# =============================================================================
+# SERVICE MONITOR (for Hermes and Ray services)
+# =============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: hermes-monitor
+  namespace: monitoring
+  labels:
+    app: prometheus
+    component: servicemonitor
+
+spec:
+  selector:
+    matchLabels:
+      app: hermes
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+    scheme: http
+
+---
+# =============================================================================
+# POD MONITOR (for Ray workers - scrape from pods directly)
+# =============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: ray-workers-monitor
+  namespace: monitoring
+  labels:
+    app: prometheus
+    component: podmonitor
+
+spec:
+  selector:
+    matchLabels:
+      ray.io/ray-node-type: worker
+  podMetricsEndpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+    scheme: http
+
+---
+# =============================================================================
+# PROMETHEUS RULES (Alerts)
+# =============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: gguf-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+    component: rules
+
+spec:
+  groups:
+  - name: gguf.rules
+    interval: 15s
+    rules:
+    
+    # High latency alerts
+    - alert: HighInferenceLatency
+      expr: histogram_quantile(0.95, rate(hermes_inference_latency_seconds_bucket[5m])) > 5
+      for: 5m
+      labels:
+        severity: warning
+        category: performance
+      annotations:
+        summary: "High inference latency for {{ $labels.model_type }}"
+        description: "95th percentile latency is {{ $value }}s"
+        impact: "Users may experience slow response times"
+        action: "Check Ray worker resource usage and model loading times"
+    
+    - alert: CriticalInferenceLatency
+      expr: histogram_quantile(0.95, rate(hermes_inference_latency_seconds_bucket[5m])) > 30
+      for: 2m
+      labels:
+        severity: critical
+        category: performance
+      annotations:
+        summary: "Critical inference latency for {{ $labels.model_type }}"
+        description: "95th percentile latency is {{ $value }}s"
+        impact: "Service is severely degraded"
+        action: "Immediately scale up Ray workers or reduce load"
+    
+    # High error rate alerts
+    - alert: HighInferenceErrorRate
+      expr: rate(hermes_inference_requests_total{status="error"}[5m]) / rate(hermes_inference_requests_total[5m]) > 0.1
+      for: 5m
+      labels:
+        severity: critical
+        category: reliability
+      annotations:
+        summary: "High error rate for {{ $labels.model_type }}"
+        description: "Error rate is {{ $value * 100 | printf "%.1f" }}%"
+        impact: "10%+ of requests are failing"
+        action: "Check actor logs and model loading errors"
+    
+    # Ray cluster health
+    - alert: RayHeadDown
+      expr: up{job="ray-head"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        category: availability
+      annotations:
+        summary: "Ray head node is down"
+        description: "Ray cluster head node has been down for 1 minute"
+        impact: "No new inference requests can be processed"
+        action: "Restart Ray head pod"
+    
+    - alert: RayWorkersDown
+      expr: count(up{job="ray-workers"}) == 0
+      for: 1m
+      labels:
+        severity: critical
+        category: availability
+      annotations:
+        summary: "All Ray workers are down"
+        description: "No Ray workers are available for inference"
+        impact: "No inference requests can be processed"
+        action: "Check Ray worker pod status and logs"
+    
+    # Resource alerts
+    - alert: RayWorkerHighCPU
+      expr: 100 * (1 - avg by (instance) (irate(node_cpu_seconds_total{mode="idle", job="node-exporter"}[5m])))) > 80
+      for: 10m
+      labels:
+        severity: warning
+        category: resources
+      annotations:
+        summary: "High CPU usage on Ray worker {{ $labels.instance }}"
+        description: "CPU usage is {{ $value | printf "%.0f" }}%"
+        impact: "Performance may be degraded"
+        action: "Consider scaling up Ray workers"
+    
+    - alert: RayWorkerHighMemory
+      expr: 100 * (1 - (avg by (instance) (node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes)) > 80
+      for: 10m
+      labels:
+        severity: warning
+        category: resources
+      annotations:
+        summary: "High memory usage on Ray worker {{ $labels.instance }}"
+        description: "Memory usage is {{ $value | printf "%.0f" }}%"
+        impact: "Risk of OOM errors"
+        action: "Consider scaling up Ray workers or reducing model sizes"
+
+---
+# =============================================================================
+# PROMETHEUS SERVICE
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+    component: server
+
+spec:
+  selector:
+    matchLabels:
+      app: prometheus
+      component: server
+  ports:
+  - name: web
+    port: 9090
+    targetPort: web
+    protocol: TCP
+  type: ClusterIP
+
+---
+# =============================================================================
+# PROMETHEUS INGRESS (Optional - for external access)
+# =============================================================================
+
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+    component: server
+
+spec:
+  entryPoints:
+    - websecure
+  routes:
+  - match: Host(`prometheus.yourdomain.com`)
+    kind: Rule
+    services:
+    - name: prometheus
+      port: 9090
+  tls:
+    secretName: prometheus-tls

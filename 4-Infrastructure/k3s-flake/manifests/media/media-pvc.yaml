@@ -1,0 +1,2 @@
+# Media storage uses hostPath on steamdeck (/mnt/media).
+# PVC not used — see per-deployment hostPath volume mounts.

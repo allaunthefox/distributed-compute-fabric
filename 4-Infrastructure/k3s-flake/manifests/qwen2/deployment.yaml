@@ -1,0 +1,141 @@
+# Qwen2-7B Model Deployment - General-purpose specialist
+# Excellent for both code and math reasoning
+# Runs alongside DeepSeek-Coder as alternative specialist tool
+#
+# Architecture:
+#   Hermes (orchestrator) -> qwen2-model (specialist) -> response
+#
+# Model specs:
+#   - 7B parameters, Q4_K_M quantization (~3.5-4GB)
+#   - Strong at code, math, and general reasoning
+#   - Context window: 32K tokens
+#   - ARM64 compatible
+#
+# Resource usage:
+#   - Memory: 4-6GB (model) + overhead
+#   - CPU: 1-2 cores for good throughput
+#   - Fits comfortably on neon-64gb with other models
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen2-model
+  namespace: services
+  labels:
+    app: qwen2-model
+    role: specialist-tool
+    tool-type: general
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen2-model
+  strategy:
+    type: Recreate  # Clean restart when model changes
+  template:
+    metadata:
+      labels:
+        app: qwen2-model
+        role: specialist-tool
+        tool-type: general
+    spec:
+      # Run on neon-64gb ARM64 node
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        topology.researchstack.io/role: neon
+      tolerations:
+        - key: "dedicated"
+          operator: "Equal"
+          value: "gpu"
+          effect: "NoSchedule"
+      containers:
+        - name: qwen2-7b
+          # Official llama.cpp container with ARM64 support
+          image: ghcr.io/ggerganov/llama.cpp:main
+          command:
+            - "llama-server"
+            - "-m"
+            - "/models/Qwen2-7B-Instruct-Q4_K_M.gguf"
+            - "-c"
+            - "32768"  # 32K context window
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--threads"
+            - "4"
+            - "--n-gpu-layers"
+            - "0"  # CPU-only mode (ARM64 has no NVIDIA GPU currently)
+            - "--log-disable"  # Reduce log noise
+            - "--cont-batch"
+            - "512"  # Batching for throughput
+            - "--n-batch"
+            - "512"
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          env:
+            - name: MODEL_PATH
+              value: "/models/Qwen2-7B-Instruct-Q4_K_M.gguf"
+            - name: MODEL_NAME
+              value: "qwen2-7b-instruct"
+            - name: CONTEXT_WINDOW
+              value: "32768"
+            - name: MAX_TOKENS
+              value: "4096"
+            - name: TEMPERATURE
+              value: "0.7"  # Balanced creativity
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "1"
+            limits:
+              memory: "6Gi"
+              cpu: "2"
+          # Startup probe - model loading takes time
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+            successThreshold: 1
+          # Liveness probe
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness probe
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Security context
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: models
+          # Primary: hostPath to neon's Downloads directory
+          # Model: /home/allaun/Downloads/Qwen2-7B-Instruct-Q4_K_M.gguf
+          hostPath:
+            path: /home/allaun/Downloads
+            type: Directory

@@ -1,0 +1,159 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: metube-config
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metube
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metube
+  template:
+    metadata:
+      labels:
+        app: metube
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: metube
+          image: ghcr.io/alexta69/metube:latest
+          ports:
+            - containerPort: 8081
+          volumeMounts:
+            - name: media
+              mountPath: /downloads
+              subPath: downloads
+      volumes:
+        - name: media
+          persistentVolumeClaim:
+            claimName: media-store
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metube
+  namespace: media
+spec:
+  type: NodePort
+  ports:
+    - port: 8081
+      targetPort: 8081
+      nodePort: 30096
+  selector:
+    app: metube
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: suggestarr
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: suggestarr
+  template:
+    metadata:
+      labels:
+        app: suggestarr
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: suggestarr
+          image: ciuse99/suggestarr:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: PORT
+              value: "5000"
+            - name: SUGGESTARR_PORT
+              value: "5000"
+          env:
+            - name: SONARR_URL
+              value: "http://sonarr:8989"
+            - name: RADARR_URL
+              value: "http://radarr:7878"
+            - name: LIDARR_URL
+              value: "http://lidarr:8686"
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+      volumes:
+        - name: config
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: suggestarr-app
+  namespace: media
+spec:
+  type: NodePort
+  ports:
+    - port: 5000
+      targetPort: 5000
+      nodePort: 30097
+  selector:
+    app: suggestarr
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: boxarr
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: boxarr
+  template:
+    metadata:
+      labels:
+        app: boxarr
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: boxarr
+          image: ghcr.io/iongpt/boxarr:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: BOXARR_PORT
+              value: "5000"
+          volumeMounts:
+            - name: config
+              mountPath: /app/data
+      volumes:
+        - name: config
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: boxarr
+  namespace: media
+spec:
+  type: NodePort
+  ports:
+    - port: 5000
+      targetPort: 5000
+      nodePort: 30098
+  selector:
+    app: boxarr

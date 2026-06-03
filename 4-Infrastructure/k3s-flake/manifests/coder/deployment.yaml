@@ -1,0 +1,153 @@
+# Coder Model Deployment - Specialist tool for Hermes orchestrator
+# Runs DeepSeek-Coder-6.7B-Instruct for math/code verification
+# Called internally by Hermes before generating responses
+#
+# Architecture: Hermes (orchestrator) → coder-model (specialist tool)
+# Flow:
+#   1. User sends chat request to Hermes
+#   2. Hermes detects math/code in prompt
+#   3. Hermes calls this service: POST /v1/chat/completions
+#   4. Coder model verifies/analyzes the math
+#   5. Hermes incorporates result into final response
+#
+# Memory: ~6-8GB for 6.7B model with Q4_K_M quantization
+# Context: 32K tokens for handling long proofs
+# Node: Runs on neon-64gb (ARM64) with hostPath to /home/allaun/Downloads
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coder-model
+  namespace: services
+  labels:
+    app: coder-model
+    role: specialist-tool
+    tool-type: coder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: coder-model
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: coder-model
+        role: specialist-tool
+        tool-type: coder
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: arm64
+        topology.researchstack.io/role: neon
+      tolerations:
+        - key: "dedicated"
+          operator: "Equal"
+          value: "gpu"
+          effect: "NoSchedule"
+      initContainers:
+        - name: download-model
+          image: curlimages/curl:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              MODEL_FILE="/models/DeepSeek-Coder-6.7B-Instruct-Q4_K_M.gguf"
+              MIN_SIZE=$((4 * 1024 * 1024 * 1024))
+              FILE_SIZE=$(stat -c%s "$MODEL_FILE" 2>/dev/null || echo 0)
+              mkdir -p "$(dirname "$MODEL_FILE")"
+              if [ ! -f "$MODEL_FILE" ] || [ "$FILE_SIZE" -lt "$MIN_SIZE" ]; then
+                rm -f "$MODEL_FILE"
+                echo "Downloading DeepSeek-Coder-6.7B-Instruct-Q4_K_M..."
+                curl -fLo "$MODEL_FILE" \
+                  "https://huggingface.co/TheBloke/DeepSeek-Coder-6.7B-Instruct-GGUF/resolve/main/deepseek-coder-6.7b-instruct.Q4_K_M.gguf" \
+                  --retry 3 --retry-delay 10 --location
+                echo "Downloaded."
+              else
+                echo "Model already cached."
+              fi
+              chmod 644 "$MODEL_FILE" 2>/dev/null || true
+              ls -la "$MODEL_FILE"
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      containers:
+        - name: deepseek-coder
+          image: ghcr.io/ggml-org/llama.cpp:server
+          command:
+            - "/app/llama-server"
+            - "-m"
+            - "/models/DeepSeek-Coder-6.7B-Instruct-Q4_K_M.gguf"
+            - "-c"
+            - "16384"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "-t"
+            - "18"
+            - "-ngl"
+            - "0"
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          env:
+            - name: MODEL_PATH
+              value: "/models/DeepSeek-Coder-6.7B-Instruct-Q4_K_M.gguf"
+            - name: MODEL_NAME
+              value: "deepseek-coder-6.7b-instruct"
+            - name: CONTEXT_WINDOW
+              value: "32768"
+            - name: MAX_TOKENS
+              value: "4096"
+            - name: TEMPERATURE
+              value: "0.1"  # Low temperature for deterministic verification
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+
+          resources:
+            requests:
+              memory: "12Gi"
+              cpu: "4"
+            limits:
+              memory: "20Gi"
+              cpu: "18"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 12
+          # Liveness probe
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness probe
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            runAsNonRoot: false
+            readOnlyRootFilesystem: false
+      volumes:
+        - name: models
+          hostPath:
+            path: /home/allaun/Downloads
+            type: Directory
+

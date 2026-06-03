@@ -1,0 +1,79 @@
+{
+  admin off
+  email bigdataiscoming@protonmail.com
+}
+
+researchstack.info {
+  redir https://www.researchstack.info{uri}
+}
+
+auth.researchstack.info {
+  reverse_proxy http://100.88.57.96:30080
+}
+
+flaresolverr.researchstack.info {
+  reverse_proxy http://100.88.57.96:30105
+}
+
+www.researchstack.info {
+  forward_auth http://100.88.57.96:30080 {
+    uri /outpost.goauthentik.io/auth/caddy
+    copy_headers X-Authentik-User X-Authentik-Username X-Authentik-Groups X-Authentik-Email
+  }
+  reverse_proxy http://100.88.57.96:30093
+}
+
+uptime.researchstack.info {
+  forward_auth http://100.88.57.96:30080 {
+    uri /outpost.goauthentik.io/auth/caddy
+    copy_headers X-Authentik-User X-Authentik-Username
+  }
+  reverse_proxy http://100.88.57.96:30081
+}
+
+media.researchstack.info {
+  forward_auth http://100.88.57.96:30080 {
+    uri /outpost.goauthentik.io/auth/caddy
+  }
+  reverse_proxy http://100.88.57.96:30091
+}
+
+music.researchstack.info {
+  reverse_proxy http://100.88.57.96:30089
+}
+
+books.researchstack.info {
+  reverse_proxy http://100.88.57.96:30094
+}
+
+audiobooks.researchstack.info {
+  reverse_proxy http://100.88.57.96:30090
+}
+
+movies.researchstack.info {
+  reverse_proxy http://100.88.57.96:30086
+}
+
+tv.researchstack.info {
+  reverse_proxy http://100.88.57.96:30085
+}
+
+downloads.researchstack.info {
+  reverse_proxy http://100.88.57.96:30082
+}
+
+vault.researchstack.info {
+  reverse_proxy http://100.88.57.96:30106
+}
+
+vaultapi.researchstack.info {
+  reverse_proxy http://100.88.57.96:30107
+}
+
+trailbase.researchstack.info {
+  reverse_proxy http://100.88.57.96:30104
+}
+
+ebook.researchstack.info {
+  reverse_proxy http://100.88.57.96:30103
+}

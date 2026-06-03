@@ -1,0 +1,44 @@
+# Caddy snippet for chat.researchstack.info
+# Replace the existing chat.researchstack.info block in microvm-racknerd Caddyfile
+# with this configuration to reverse proxy to Hermes via Traefik
+
+# OLD CONFIGURATION (REMOVE):
+# chat.researchstack.info {
+#     forward_auth * http://100.119.165.120:9000 {
+#         uri /outpost.goauthentik.io/auth/caddy
+#         copy_headers X-Authentik-Username X-Authentik-Email X-Authentik-Name X-Authentik-Uid X-Authentik-Jwt X-Authentik-Meta-Jwt X-Authentik-Meta-App X-Authentik-Meta-Version
+#     }
+#     root * /var/www/researchstack/chat
+#     file_server
+#     try_files {path} /index.html
+# }
+
+# NEW CONFIGURATION (ADD):
+chat.researchstack.info {
+    # Forward authentication to Authentik
+    forward_auth * http://100.119.165.120:9000 {
+        uri /outpost.goauthentik.io/auth/caddy
+        copy_headers X-Authentik-Username X-Authentik-Email X-Authentik-Name X-Authentik-Uid X-Authentik-Jwt X-Authentik-Meta-Jwt X-Authentik-Meta-App X-Authentik-Meta-Version
+    }
+    
+    # Reverse proxy to Traefik on cupfox (which routes to Hermes service via Ingress)
+    reverse_proxy http://100.110.163.82:80 {
+        header_up Host chat.researchstack.info
+    }
+}
+
+# Alternative: If Traefik is running on cupfox with external IP
+# chat.researchstack.info {
+#     forward_auth * http://100.119.165.120:9000 {
+#         uri /outpost.goauthentik.io/auth/caddy
+#         copy_headers X-Authentik-Username X-Authentik-Email X-Authentik-Name X-Authentik-Uid X-Authentik-Jwt X-Authentik-Meta-Jwt X-Authentik-Meta-App X-Authentik-Meta-Version
+#     }
+#     reverse_proxy https://152.53.81.164 {
+#         header_up Host chat.researchstack.info
+#     }
+# }
+
+# After updating Caddyfile on microvm-racknerd:
+# 1. Test config: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+# 2. Reload Caddy: caddy reload
+# 3. Or restart: systemctl restart caddy

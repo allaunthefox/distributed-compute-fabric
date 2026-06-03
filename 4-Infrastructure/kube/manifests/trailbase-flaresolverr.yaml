@@ -1,0 +1,110 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: trailbase-depot
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trailbase
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trailbase
+  template:
+    metadata:
+      labels:
+        app: trailbase
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: trailbase
+          image: trailbase/trailbase:latest
+          command: ["/app/trail", "run"]
+          ports:
+            - containerPort: 4000
+          env:
+            - name: ADDRESS
+              value: "0.0.0.0:4000"
+          volumeMounts:
+            - name: depot
+              mountPath: /app/traildepot
+      volumes:
+        - name: depot
+          persistentVolumeClaim:
+            claimName: trailbase-depot
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trailbase
+  namespace: media
+spec:
+  type: NodePort
+  ports:
+    - port: 4000
+      targetPort: 4000
+      nodePort: 30104
+  selector:
+    app: trailbase
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flaresolverr
+  namespace: media
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flaresolverr
+  template:
+    metadata:
+      labels:
+        app: flaresolverr
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: qfox-1
+      containers:
+        - name: flaresolverr
+          image: ghcr.io/flaresolverr/flaresolverr:latest
+          ports:
+            - containerPort: 8191
+          env:
+            - name: LOG_LEVEL
+              value: "info"
+            - name: HEADLESS
+              value: "true"
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flaresolverr
+  namespace: media
+spec:
+  type: NodePort
+  ports:
+    - port: 8191
+      targetPort: 8191
+      nodePort: 30105
+  selector:
+    app: flaresolverr
