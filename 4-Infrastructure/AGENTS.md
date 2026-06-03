@@ -4,54 +4,62 @@ Scope: `distributed-compute-fabric/`
 
 ## Repository Purpose
 
-Generic, reusable infrastructure patterns for distributed computing systems. Contains Ray, Kubernetes, monitoring, and networking configurations that are not specific to any particular research or application area.
+Generic compute fabric infrastructure. Accelerates ANY compute type via voltage-mode routing, spatial hash indexing, VCN/LUPINE hardware acceleration, and Ray distributed scheduling.
 
 ## Components
 
-### Ray Cluster
-- **Purpose**: Distributed computing framework with generic resource scheduling
-- **Components**:
-  - Ray cluster deployment manifests
-  - Redis backend for Ray coordination
-  - Generic compute actors for common patterns
+### Compute Layer
+| Component | Purpose |
+|-----------|---------|
+| `vcn_lupine_daemon.py` | VCN/LUPINE hardware acceleration daemon |
+| `vcn_lupine_bridge_spec.md` | VCN frame encoding specification |
+| `spatial-hash-gpu/` | WebGPU GridStorage — vectorless graph database |
+| `lytenyte-storage/` | Spatial hash visualization dashboard |
 
-### Kubernetes Infrastructure
-- **Purpose**: Container orchestration and cluster management
-- **Components**:
-  - k3s configuration (NixOS-based)
-  - Deployment manifests for various services
-  - Kustomization configurations
+### Orchestration
+| Component | Purpose |
+|-----------|---------|
+| `hermes/` | Voltage-mode orchestrator (routes compute to GPU/ARM/VCN) |
+| `manifests/hermes/` | Kubernetes deployment manifests |
+| `ray-actors/` | Generic Ray compute actors |
 
-### Monitoring
-- **Purpose**: Observability and alerting
-- **Components**:
-  - Prometheus deployment
-  - Grafana dashboards
-  - Service monitors
+### Hardware Abstractions
+| Component | Purpose |
+|-----------|---------|
+| `BraidVCNBridge.lean` | Formal braid-to-VCN mapping spec |
+| Virtio-Net | DMA ring buffer compute substrate |
+| SPIR-V | Shader compilation target |
+| QEMU framebuffer | `/dev/fb0` compute target |
 
-### Tailscale Networking
-- **Purpose**: Mesh networking for cluster nodes
-- **Components**:
-  - Subnet router deployment
-  - Cluster roles and bindings
-  - mDNS configuration
+### Infrastructure
+| Component | Purpose |
+|-----------|---------|
+| `ray/` | Ray cluster manifests |
+| `monitoring/` | Prometheus/Grafana stack |
+| `tailscale/` | Subnet router for cross-node networking |
+| `grpc/` | Optional gRPC inference proxy (streaming tokens) |
 
-### Hermes Orchestrator
-- **Purpose**: Distributed compute orchestration
-- **Components**:
-  - Orchestrator service
-  - Frame dispatcher
-  - Ray actor integration
+## Node Roles
+
+| Node | Role | Hardware |
+|------|------|----------|
+| cupfox | Control plane | k3s, kuberay-operator, Authentik, Caddy |
+| neon-64gb | Heavy lifting | ARM64, Hermes, Gemma model |
+| qfox-1 | GPU compute | RTX 4070, CUDA, VCN-LUPINE |
+| steamdeck | VAAPI + Ray | VAAPI encode, Ray head + workers |
+| nixos | AMD GPU | ROCm |
+| racknerd | Edge | Public ingress |
 
 ## Rules
 
-- Infrastructure must be generic and reusable across different domains
-- All Python files should pass `python3 -m py_compile` before commit
-- Kubernetes manifests should be valid YAML
+- All hardcoded IPs/hostnames must use environment variables with defaults
+- Python files must pass `python3 -m py_compile` before commit
+- Kubernetes manifests must be valid YAML
 - Secrets must never be committed (use .env files or external secret management)
-- Monitor configurations should follow Prometheus operator conventions
+- Voltage modes: STORE/COMPUTE/APPROX/MORPHIC — never hardcode routing decisions
+- gRPC is optional — default to HTTP unless streaming is required
 
 ## Cross-References
 
-- **research-compute-fabric** - Research-specific components (VCN, Braid, Spatial Hash, etc.)
-- **Research Stack** - Parent repository with formalization and documentation
+- **research-compute-fabric** — Research-specific algorithms (Braid, PIST/RRC, Lean, eigensolid)
+- **Research Stack** — Parent repository with formalization and documentation
